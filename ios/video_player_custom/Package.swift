@@ -12,13 +12,15 @@ let package = Package(
         .library(name: "video-player-custom", targets: ["video_player_custom"])
     ],
     dependencies: [
-        .package(name: "FlutterFramework", path: "../FlutterFramework")
+        .package(name: "FlutterFramework", path: "../FlutterFramework"),
+        .package(name: "video_player_avfoundation", path: "../video_player_avfoundation")
     ],
     targets: [
         .target(
             name: "video_player_custom",
             dependencies: [
-                .product(name: "FlutterFramework", package: "FlutterFramework")
+                .product(name: "FlutterFramework", package: "FlutterFramework"),
+                .product(name: "video-player-avfoundation", package: "video_player_avfoundation")
             ],
             resources: [
                 // If your plugin requires a privacy manifest, for example if it uses any required

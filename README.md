@@ -161,16 +161,26 @@ entering PiP mode.
 ```dart
 VideoPlayer(
   controller,
-  loadingBuilder: (context) =>
-      const Center(child: CircularProgressIndicator()),
-  errorBuilder: (context) => Center(
+  loadingBuilder: (context, progress) => Center(
+    child: progress != null
+        ? LinearProgressIndicator(value: progress)
+        : const CircularProgressIndicator(),
+  ),
+  errorBuilder: (context, error) => Center(
     child: Text(
-      controller.value.errorDescription ?? 'Error loading video.',
+      error ?? 'Error loading video.',
       textAlign: TextAlign.center,
     ),
   ),
 )
 ```
+
+- **`loadingBuilder: (context, progress)`** — shown while the controller is
+  initializing/buffering. `progress` is the buffered fraction (`0.0`–`1.0`), or
+  `null` while the buffered range is not yet measurable.
+- **`errorBuilder: (context, error)`** — shown in place of the video when
+  `controller.value.hasError` is true. `error` is `value.errorDescription`, or
+  `null` when no description is available.
 
 When neither is provided, the widget keeps the official `video_player` behaviour (a black frame
 while loading and a centered error icon on failure).

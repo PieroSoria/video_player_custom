@@ -1153,14 +1153,28 @@ class _VideoAppLifeCycleObserver extends Object with WidgetsBindingObserver {
   }
 }
 
+/// Signature for the [VideoPlayer.loadingBuilder] argument.
+///
+/// [progress] is the buffered fraction of the video (`0.0`–`1.0`), or `null`
+/// while the buffered range is not yet measurable.
+typedef VideoPlayerLoadingBuilder =
+    Widget Function(BuildContext context, double? progress);
+
+/// Signature for the [VideoPlayer.errorBuilder] argument.
+///
+/// [error] is the [VideoPlayerValue.errorDescription] reported by the
+/// controller, or `null` when no description is available.
+typedef VideoPlayerErrorBuilder =
+    Widget Function(BuildContext context, String? error);
+
 /// Widget that displays the video controlled by [controller].
 class VideoPlayer extends StatefulWidget {
   /// Uses the given [controller] for all video rendered in this widget.
   ///
   /// When [loadingBuilder] is provided it is shown while the controller is
   /// initializing or buffering. When [errorBuilder] is provided it is shown
-  /// when [VideoPlayerValue.hasError] is true arguments; otherwise the
-  /// defaults (a black frame while loading and a centered error box) are used.
+  /// when [VideoPlayerValue.hasError] is true; otherwise the defaults (a black
+  /// frame while loading and a centered error box) are used.
   const VideoPlayer(
     this.controller, {
     super.key,
@@ -1173,13 +1187,14 @@ class VideoPlayer extends StatefulWidget {
   final VideoPlayerController controller;
 
   /// Widget shown while the controller is loading (not yet initialized) or
-  /// buffering. Defaults to a black container.
-  final WidgetBuilder? loadingBuilder;
+  /// buffering, with the buffered [progress] (`0.0`–`1.0`). Defaults to a
+  /// black container.
+  final VideoPlayerLoadingBuilder? loadingBuilder;
 
   /// Widget shown when the controller reports an error
-  /// ([VideoPlayerValue.hasError]), in place of the video view. Defaults to a
-  /// centered error indicator.
-  final WidgetBuilder? errorBuilder;
+  /// ([VideoPlayerValue.hasError]), in place of the video view, with the
+  /// reported [error] description. Defaults to a centered error box.
+  final VideoPlayerErrorBuilder? errorBuilder;
 
   @override
   State<VideoPlayer> createState() => _VideoPlayerState();
@@ -1235,9 +1250,9 @@ class _VideoPlayerState extends State<VideoPlayer> {
     final VideoPlayerValue value = widget.controller.value;
 
     if (value.hasError) {
-      final WidgetBuilder? errorBuilder = widget.errorBuilder;
+      final VideoPlayerErrorBuilder? errorBuilder = widget.errorBuilder;
       return errorBuilder != null
-          ? errorBuilder(context)
+          ? errorBuilder(context, value.errorDescription)
           : const Center(
               child: Icon(Icons.error_outline, size: 36),
             );
@@ -1245,12 +1260,27 @@ class _VideoPlayerState extends State<VideoPlayer> {
 
     if (widget.loadingBuilder != null &&
         (!value.isInitialized || value.isBuffering)) {
-      return widget.loadingBuilder!(context);
+      return widget.loadingBuilder!(context, _bufferedProgress(value));
     }
 
     return _videoPlayerPlatform.buildViewWithOptions(
       platform_interface.VideoViewOptions(playerId: _playerId),
     );
+  }
+
+  /// Buffered fraction of the video (`0.0`–`1.0`), or `null` while the
+  /// duration is not yet known and no buffered range is measurable.
+  double? _bufferedProgress(VideoPlayerValue value) {
+    final Duration duration = value.duration;
+    if (duration <= Duration.zero || value.buffered.isEmpty) {
+      return null;
+    }
+    final int bufferedMs = value.buffered.last.end.inMilliseconds;
+    final int totalMs = duration.inMilliseconds;
+    if (totalMs <= 0) {
+      return null;
+    }
+    return (bufferedMs / totalMs).clamp(0.0, 1.0);
   }
 }
 
