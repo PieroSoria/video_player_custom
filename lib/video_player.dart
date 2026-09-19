@@ -1156,11 +1156,30 @@ class _VideoAppLifeCycleObserver extends Object with WidgetsBindingObserver {
 /// Widget that displays the video controlled by [controller].
 class VideoPlayer extends StatefulWidget {
   /// Uses the given [controller] for all video rendered in this widget.
-  const VideoPlayer(this.controller, {super.key});
+  ///
+  /// When [loadingBuilder] is provided it is shown while the controller is
+  /// initializing or buffering. When [errorBuilder] is provided it is shown
+  /// when [VideoPlayerValue.hasError] is true arguments; otherwise the
+  /// defaults (a black frame while loading and a centered error box) are used.
+  const VideoPlayer(
+    this.controller, {
+    super.key,
+    this.loadingBuilder,
+    this.errorBuilder,
+  });
 
   /// The [VideoPlayerController] responsible for the video being rendered in
   /// this widget.
   final VideoPlayerController controller;
+
+  /// Widget shown while the controller is loading (not yet initialized) or
+  /// buffering. Defaults to a black container.
+  final WidgetBuilder? loadingBuilder;
+
+  /// Widget shown when the controller reports an error
+  /// ([VideoPlayerValue.hasError]), in place of the video view. Defaults to a
+  /// centered error indicator.
+  final WidgetBuilder? errorBuilder;
 
   @override
   State<VideoPlayer> createState() => _VideoPlayerState();
@@ -1189,9 +1208,11 @@ class _VideoPlayerState extends State<VideoPlayer> {
   @override
   void didUpdateWidget(VideoPlayer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    oldWidget.controller.removeListener(_controllerDidUpdateValue);
-    _playerId = widget.controller.playerId;
-    widget.controller.addListener(_controllerDidUpdateValue);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_controllerDidUpdateValue);
+      _playerId = widget.controller.playerId;
+      widget.controller.addListener(_controllerDidUpdateValue);
+    }
   }
 
   @override
@@ -1206,10 +1227,30 @@ class _VideoPlayerState extends State<VideoPlayer> {
         ? Container()
         : _VideoPlayerWithRotation(
             rotation: widget.controller.value.rotationCorrection,
-            child: _videoPlayerPlatform.buildViewWithOptions(
-              platform_interface.VideoViewOptions(playerId: _playerId),
-            ),
+            child: _buildContent(context),
           );
+  }
+
+  Widget _buildContent(BuildContext context) {
+    final VideoPlayerValue value = widget.controller.value;
+
+    if (value.hasError) {
+      final WidgetBuilder? errorBuilder = widget.errorBuilder;
+      return errorBuilder != null
+          ? errorBuilder(context)
+          : const Center(
+              child: Icon(Icons.error_outline, size: 36),
+            );
+    }
+
+    if (widget.loadingBuilder != null &&
+        (!value.isInitialized || value.isBuffering)) {
+      return widget.loadingBuilder!(context);
+    }
+
+    return _videoPlayerPlatform.buildViewWithOptions(
+      platform_interface.VideoViewOptions(playerId: _playerId),
+    );
   }
 }
 

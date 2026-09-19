@@ -128,6 +128,53 @@ documentation in order to give a more elaborate overview of the API.
 
 This is not complete as of now. You can contribute to this section by [opening a pull request](https://github.com/flutter/packages/pulls).
 
+# Video Player on Flutter (vendado PiP)
+
+This package includes a first-class, platform-native Picture-in-Picture (PiP) API on top of the
+complete `video_player` implementation, without requiring any extra package:
+
+```dart
+// Enter PiP with the default size.
+await controller.enterPipMode();
+
+// Or specify the PiP window size (falls back to the native defaults if omitted).
+await controller.enterPipMode(width: 220, height: 124);
+
+// React to PiP lifecycle changes.
+controller.pipEventStream.listen((PipEvent event) {
+  debugPrint('isInPip=${event.isInPip} isRestored=${event.isRestored}');
+});
+
+// Exit PiP (no-op if not currently in PiP mode).
+await controller.exitPipMode();
+```
+
+PiP support depends on the platform (enabled on Android via the dedicated `pipActivity`, and on
+iOS/macOS via the native AVPlayer PiP). Use `controller.pipSupported()` to query support before
+entering PiP mode.
+
+### Loading and error builders
+
+[`VideoPlayer`] can take over the loading (initializing/buffering) and error states with the
+[`loadingBuilder`] and [`errorBuilder`] arguments, respectively:
+
+```dart
+VideoPlayer(
+  controller,
+  loadingBuilder: (context) =>
+      const Center(child: CircularProgressIndicator()),
+  errorBuilder: (context) => Center(
+    child: Text(
+      controller.value.errorDescription ?? 'Error loading video.',
+      textAlign: TextAlign.center,
+    ),
+  ),
+)
+```
+
+When neither is provided, the widget keeps the official `video_player` behaviour (a black frame
+while loading and a centered error icon on failure).
+
 ### Playback speed
 
 You can set the playback speed on your `_controller` (instance of `VideoPlayerController`) by
