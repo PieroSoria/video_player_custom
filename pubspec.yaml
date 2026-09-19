@@ -1,0 +1,37 @@
+name: video_player_custom
+description: Video player widget with Picture-in-Picture support. Fully vendored, no federated deps.
+version: 0.0.1
+publish_to: none
+
+environment:
+  sdk: "^3.12.0"
+  flutter: ">=3.44.0"
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: io.flutter.plugins.videoplayer
+        pluginClass: VideoPlayerPlugin
+      ios:
+        pluginClass: VideoPlayerPlugin
+      macos:
+        pluginClass: VideoPlayerPlugin
+      web:
+        pluginClass: VideoPlayerPlugin
+        fileName: video_player_custom_web.dart
+
+dependencies:
+  flutter:
+    sdk: flutter
+  video_player_platform_interface: ^6.9.0
+  flutter_web_plugins:
+    sdk: flutter
+  web: ^1.1.0
+  html: ^0.15.0
+  plugin_platform_interface: ^2.1.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
