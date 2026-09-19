@@ -1,4 +1,4 @@
-﻿// Copyright 2013 The Flutter Authors
+// Copyright 2013 The Flutter Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -11,39 +11,63 @@ void main() {
     WebVTTCaptionFile parsedFile;
 
     test('with Metadata', () {
-      parsedFile = WebVTTCaptionFile(_valid_vtt_with_metadata);
+      parsedFile = WebVTTCaptionFile(_validVttWithMetadata);
       expect(parsedFile.captions.length, 1);
 
       expect(parsedFile.captions[0].start, const Duration(seconds: 1));
-      expect(parsedFile.captions[0].end, const Duration(seconds: 2, milliseconds: 500));
+      expect(
+        parsedFile.captions[0].end,
+        const Duration(seconds: 2, milliseconds: 500),
+      );
       expect(parsedFile.captions[0].text, 'We are in New York City');
     });
 
     test('with Multiline', () {
-      parsedFile = WebVTTCaptionFile(_valid_vtt_with_multiline);
+      parsedFile = WebVTTCaptionFile(_validVttWithMultiline);
       expect(parsedFile.captions.length, 1);
 
       expect(parsedFile.captions[0].number, 2);
-      expect(parsedFile.captions[0].start, const Duration(seconds: 2, milliseconds: 800));
-      expect(parsedFile.captions[0].end, const Duration(seconds: 3, milliseconds: 283));
-      expect(parsedFile.captions[0].text, 'â€” It will perforate your stomach.\nâ€” You could die.');
+      expect(
+        parsedFile.captions[0].start,
+        const Duration(seconds: 2, milliseconds: 800),
+      );
+      expect(
+        parsedFile.captions[0].end,
+        const Duration(seconds: 3, milliseconds: 283),
+      );
+      expect(
+        parsedFile.captions[0].text,
+        'â€” It will perforate your stomach.\nâ€” You could die.',
+      );
     });
 
     test('with Multiline without identifier', () {
-      parsedFile = WebVTTCaptionFile(_valid_vtt_with_multiline_without_identifier);
+      parsedFile = WebVTTCaptionFile(_validVttWithMultilineWithoutIdentifier);
       expect(parsedFile.captions.length, 1);
 
       expect(parsedFile.captions[0].number, 1);
-      expect(parsedFile.captions[0].start, const Duration(seconds: 2, milliseconds: 800));
-      expect(parsedFile.captions[0].end, const Duration(seconds: 3, milliseconds: 283));
-      expect(parsedFile.captions[0].text, 'â€” It will perforate your stomach.\nâ€” You could die.');
+      expect(
+        parsedFile.captions[0].start,
+        const Duration(seconds: 2, milliseconds: 800),
+      );
+      expect(
+        parsedFile.captions[0].end,
+        const Duration(seconds: 3, milliseconds: 283),
+      );
+      expect(
+        parsedFile.captions[0].text,
+        'â€” It will perforate your stomach.\nâ€” You could die.',
+      );
     });
 
     test('with styles tags', () {
-      parsedFile = WebVTTCaptionFile(_valid_vtt_with_styles);
+      parsedFile = WebVTTCaptionFile(_validVttWithStyles);
       expect(parsedFile.captions.length, 3);
 
-      expect(parsedFile.captions[0].start, const Duration(seconds: 5, milliseconds: 200));
+      expect(
+        parsedFile.captions[0].start,
+        const Duration(seconds: 5, milliseconds: 200),
+      );
       expect(parsedFile.captions[0].end, const Duration(seconds: 6));
       expect(
         parsedFile.captions[0].text,
@@ -52,7 +76,7 @@ void main() {
     });
 
     test('with subtitling features', () {
-      parsedFile = WebVTTCaptionFile(_valid_vtt_with_subtitling_features);
+      parsedFile = WebVTTCaptionFile(_validVttWithSubtitlingFeatures);
       expect(parsedFile.captions.length, 3);
 
       expect(parsedFile.captions[0].number, 1);
@@ -62,7 +86,7 @@ void main() {
     });
 
     test('with [hours]:[minutes]:[seconds].[milliseconds].', () {
-      parsedFile = WebVTTCaptionFile(_valid_vtt_with_hours);
+      parsedFile = WebVTTCaptionFile(_validVttWithHours);
       expect(parsedFile.captions.length, 1);
 
       expect(parsedFile.captions[0].number, 1);
@@ -72,7 +96,7 @@ void main() {
     });
 
     test('with [minutes]:[seconds].[milliseconds].', () {
-      parsedFile = WebVTTCaptionFile(_valid_vtt_without_hours);
+      parsedFile = WebVTTCaptionFile(_validVttWithoutHours);
       expect(parsedFile.captions.length, 1);
 
       expect(parsedFile.captions[0].number, 1);
@@ -82,25 +106,25 @@ void main() {
     });
 
     test('with invalid seconds format returns empty captions.', () {
-      parsedFile = WebVTTCaptionFile(_invalid_seconds);
+      parsedFile = WebVTTCaptionFile(_invalidSeconds);
       expect(parsedFile.captions, isEmpty);
     });
 
     test('with invalid minutes format returns empty captions.', () {
-      parsedFile = WebVTTCaptionFile(_invalid_minutes);
+      parsedFile = WebVTTCaptionFile(_invalidMinutes);
       expect(parsedFile.captions, isEmpty);
     });
 
     test('with invalid hours format returns empty captions.', () {
-      parsedFile = WebVTTCaptionFile(_invalid_hours);
+      parsedFile = WebVTTCaptionFile(_invalidHours);
       expect(parsedFile.captions, isEmpty);
     });
 
     test('with invalid component length returns empty captions.', () {
-      parsedFile = WebVTTCaptionFile(_time_component_too_long);
+      parsedFile = WebVTTCaptionFile(_timeComponentTooLong);
       expect(parsedFile.captions, isEmpty);
 
-      parsedFile = WebVTTCaptionFile(_time_component_too_short);
+      parsedFile = WebVTTCaptionFile(_timeComponentTooShort);
       expect(parsedFile.captions, isEmpty);
     });
   });
@@ -119,7 +143,7 @@ void main() {
 }
 
 /// See https://www.w3.org/TR/webvtt1/#introduction-comments
-const String _valid_vtt_with_metadata = '''
+const String _validVttWithMetadata = '''
 WEBVTT Kind: captions; Language: en
 
 REGION
@@ -145,7 +169,7 @@ when the cues should start or end.
 ''';
 
 /// See https://www.w3.org/TR/webvtt1/#introduction-multiple-lines
-const String _valid_vtt_with_multiline = '''
+const String _validVttWithMultiline = '''
 WEBVTT
 
 2
@@ -155,7 +179,7 @@ WEBVTT
 
 ''';
 
-const String _valid_vtt_with_multiline_without_identifier = '''
+const String _validVttWithMultilineWithoutIdentifier = '''
 WEBVTT
 
 00:02.800 --> 00:03.283
@@ -165,7 +189,7 @@ WEBVTT
 ''';
 
 /// See https://www.w3.org/TR/webvtt1/#styling
-const String _valid_vtt_with_styles = '''
+const String _validVttWithStyles = '''
 WEBVTT
 
 00:05.200 --> 00:06.000 align:start size:50%
@@ -180,7 +204,7 @@ WEBVTT
 ''';
 
 //See https://www.w3.org/TR/webvtt1/#introduction-other-features
-const String _valid_vtt_with_subtitling_features = '''
+const String _validVttWithSubtitlingFeatures = '''
 WEBVTT
 
 test
@@ -198,7 +222,7 @@ Transcrit par CÃ©lestesâ„¢
 ''';
 
 /// With format [hours]:[minutes]:[seconds].[milliseconds]
-const String _valid_vtt_with_hours = '''
+const String _validVttWithHours = '''
 WEBVTT
 
 test
@@ -208,7 +232,7 @@ This is a test.
 ''';
 
 /// Invalid seconds format.
-const String _invalid_seconds = '''
+const String _invalidSeconds = '''
 WEBVTT
 
 60:00:000.000 --> 60:02:000.000
@@ -217,7 +241,7 @@ This is a test.
 ''';
 
 /// Invalid minutes format.
-const String _invalid_minutes = '''
+const String _invalidMinutes = '''
 WEBVTT
 
 60:60:00.000 --> 60:70:00.000
@@ -226,7 +250,7 @@ This is a test.
 ''';
 
 /// Invalid hours format.
-const String _invalid_hours = '''
+const String _invalidHours = '''
 WEBVTT
 
 5:00:00.000 --> 5:02:00.000
@@ -235,7 +259,7 @@ This is a test.
 ''';
 
 /// Invalid seconds format.
-const String _time_component_too_long = '''
+const String _timeComponentTooLong = '''
 WEBVTT
 
 60:00:00:00.000 --> 60:02:00:00.000
@@ -244,7 +268,7 @@ This is a test.
 ''';
 
 /// Invalid seconds format.
-const String _time_component_too_short = '''
+const String _timeComponentTooShort = '''
 WEBVTT
 
 60:00.000 --> 60:02.000
@@ -253,7 +277,7 @@ This is a test.
 ''';
 
 /// With format [minutes]:[seconds].[milliseconds]
-const String _valid_vtt_without_hours = '''
+const String _validVttWithoutHours = '''
 WEBVTT
 
 00:03.000 --> 00:04.000
@@ -275,4 +299,3 @@ WEBVTT Kind: captions; Language: en
 <Test>This one should be ignored because the time is missing a digit.
 
 ''';
-

@@ -16,6 +16,8 @@ class MethodChannelVideoPlayerPip extends VideoPlayerPipPlatform {
         'isPipSupported',
       );
       return isSupported ?? false;
+    } on MissingPluginException {
+      return false;
     } on PlatformException catch (e) {
       debugPrint('Error checking PiP support: ${e.message}');
       return false;
@@ -27,10 +29,12 @@ class MethodChannelVideoPlayerPip extends VideoPlayerPipPlatform {
     try {
       final result = await methodChannel.invokeMethod<bool>('enterPipMode', {
         'playerId': playerId,
-        if (width != null) 'width': width,
-        if (height != null) 'height': height,
+        'width': ?width,
+        'height': ?height,
       });
       return result ?? false;
+    } on MissingPluginException {
+      return false;
     } on PlatformException catch (e) {
       debugPrint('Error entering PiP mode: ${e.message}');
       return false;
@@ -42,6 +46,8 @@ class MethodChannelVideoPlayerPip extends VideoPlayerPipPlatform {
     try {
       final result = await methodChannel.invokeMethod<bool>('exitPipMode');
       return result ?? false;
+    } on MissingPluginException {
+      return false;
     } on PlatformException catch (e) {
       debugPrint('Error exiting PiP mode: ${e.message}');
       return false;
@@ -53,6 +59,8 @@ class MethodChannelVideoPlayerPip extends VideoPlayerPipPlatform {
     try {
       final result = await methodChannel.invokeMethod<bool>('isInPipMode');
       return result ?? false;
+    } on MissingPluginException {
+      return false;
     } on PlatformException catch (e) {
       debugPrint('Error checking PiP mode: ${e.message}');
       return false;
@@ -63,6 +71,8 @@ class MethodChannelVideoPlayerPip extends VideoPlayerPipPlatform {
   Future<void> reset() async {
     try {
       await methodChannel.invokeMethod<void>('reset');
+    } on MissingPluginException {
+      return;
     } on PlatformException catch (e) {
       debugPrint('Error resetting PiP: ${e.message}');
     }

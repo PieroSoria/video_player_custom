@@ -4,6 +4,7 @@
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:video_player_platform_interface/video_player_platform_interface.dart';
@@ -22,7 +23,8 @@ class AVFoundationVideoPlayer extends VideoPlayerPlatform {
   /// Creates a new AVFoundation-based video player implementation instance.
   AVFoundationVideoPlayer({
     @visibleForTesting AVFoundationVideoPlayerApi? pluginApi,
-    @visibleForTesting VideoPlayerInstanceApi Function(int playerId)? playerApiProvider,
+    @visibleForTesting
+    VideoPlayerInstanceApi Function(int playerId)? playerApiProvider,
   }) : _api = pluginApi ?? AVFoundationVideoPlayerApi(),
        _playerApiProvider = playerApiProvider ?? _productionApiProvider;
 
@@ -71,7 +73,9 @@ class AVFoundationVideoPlayer extends VideoPlayerPlatform {
       case DataSourceType.asset:
         final String? asset = dataSource.asset;
         if (asset == null) {
-          throw ArgumentError('"asset" must be non-null for an asset data source');
+          throw ArgumentError(
+            '"asset" must be non-null for an asset data source',
+          );
         }
         uri = await _api.getAssetUrl(asset, dataSource.package);
         if (uri == null) {
@@ -90,13 +94,18 @@ class AVFoundationVideoPlayer extends VideoPlayerPlatform {
     if (uri == null) {
       throw ArgumentError('Unable to construct a video asset from $options');
     }
-    final pigeonCreationOptions = CreationOptions(uri: uri, httpHeaders: dataSource.httpHeaders);
+    final pigeonCreationOptions = CreationOptions(
+      uri: uri,
+      httpHeaders: dataSource.httpHeaders,
+    );
 
     final int playerId;
     final VideoPlayerViewState state;
     switch (viewType) {
       case VideoViewType.textureView:
-        final TexturePlayerIds ids = await _api.createForTextureView(pigeonCreationOptions);
+        final TexturePlayerIds ids = await _api.createForTextureView(
+          pigeonCreationOptions,
+        );
         playerId = ids.playerId;
         state = VideoPlayerTextureViewState(textureId: ids.textureId);
       case VideoViewType.platformView:
@@ -176,9 +185,9 @@ class AVFoundationVideoPlayer extends VideoPlayerPlatform {
     int playerId,
     bool preventsDisplaySleepDuringVideoPlayback,
   ) {
-    return _playerWith(
-      id: playerId,
-    ).setPreventsDisplaySleepDuringVideoPlayback(preventsDisplaySleepDuringVideoPlayback);
+    return _playerWith(id: playerId).setPreventsDisplaySleepDuringVideoPlayback(
+      preventsDisplaySleepDuringVideoPlayback,
+    );
   }
 
   @override
@@ -217,18 +226,23 @@ class AVFoundationVideoPlayer extends VideoPlayerPlatform {
 
   @override
   Future<List<VideoTrack>> getVideoTracks(int playerId) async {
-    final NativeVideoTrackData nativeData = await _playerWith(id: playerId).getVideoTracks();
+    final NativeVideoTrackData nativeData = await _playerWith(
+      id: playerId,
+    ).getVideoTracks();
     final tracks = <VideoTrack>[];
 
     // Convert HLS variant tracks (iOS 15+)
     if (nativeData.mediaSelectionTracks != null) {
-      for (final MediaSelectionVideoTrackData track in nativeData.mediaSelectionTracks!) {
+      for (final MediaSelectionVideoTrackData track
+          in nativeData.mediaSelectionTracks!) {
         // Use bitrate as the track ID for HLS variants
         final trackId = 'variant_${track.bitrate ?? track.variantIndex}';
         // Generate label from resolution if not provided
         final String? label =
             track.label ??
-            (track.width != null && track.height != null ? '${track.height}p' : null);
+            (track.width != null && track.height != null
+                ? '${track.height}p'
+                : null);
         tracks.add(
           VideoTrack(
             id: trackId,
@@ -251,7 +265,9 @@ class AVFoundationVideoPlayer extends VideoPlayerPlatform {
         // Generate label from resolution if not provided
         final String? label =
             track.label ??
-            (track.width != null && track.height != null ? '${track.height}p' : null);
+            (track.width != null && track.height != null
+                ? '${track.height}p'
+                : null);
         tracks.add(
           VideoTrack(
             id: trackId,
@@ -304,7 +320,9 @@ class AVFoundationVideoPlayer extends VideoPlayerPlatform {
     final VideoPlayerViewState viewState = _playerWith(id: playerId).viewState;
 
     return switch (viewState) {
-      VideoPlayerTextureViewState(:final int textureId) => Texture(textureId: textureId),
+      VideoPlayerTextureViewState(:final int textureId) => Texture(
+        textureId: textureId,
+      ),
       VideoPlayerPlatformViewState() => _buildPlatformView(playerId),
     };
   }
@@ -312,14 +330,18 @@ class AVFoundationVideoPlayer extends VideoPlayerPlatform {
   Widget _buildPlatformView(int playerId) {
     final creationParams = PlatformVideoViewCreationParams(playerId: playerId);
 
-    return IgnorePointer(
-      // IgnorePointer so that GestureDetector can be used above the platform view.
-      child: UiKitView(
-        viewType: 'plugins.flutter.dev/video_player_ios',
-        creationParams: creationParams,
-        creationParamsCodec: AVFoundationVideoPlayerApi.pigeonChannelCodec,
-      ),
-    );
+    final Widget view = defaultTargetPlatform == TargetPlatform.macOS
+        ? AppKitView(
+            viewType: 'plugins.flutter.dev/video_player_ios',
+            creationParams: creationParams,
+            creationParamsCodec: AVFoundationVideoPlayerApi.pigeonChannelCodec,
+          )
+        : UiKitView(
+            viewType: 'plugins.flutter.dev/video_player_ios',
+            creationParams: creationParams,
+            creationParamsCodec: AVFoundationVideoPlayerApi.pigeonChannelCodec,
+          );
+    return IgnorePointer(child: view);
   }
 
   _PlayerInstance _playerWith({required int id}) {
@@ -331,8 +353,11 @@ class AVFoundationVideoPlayer extends VideoPlayerPlatform {
 /// An instance of a video player, corresponding to a single player ID in
 /// [AVFoundationVideoPlayer].
 class _PlayerInstance {
-  _PlayerInstance(this._api, this.viewState, {required EventChannel eventChannel})
-    : _eventChannel = eventChannel;
+  _PlayerInstance(
+    this._api,
+    this.viewState, {
+    required EventChannel eventChannel,
+  }) : _eventChannel = eventChannel; // ignore: prefer_initializing_formals
 
   final VideoPlayerInstanceApi _api;
   final VideoPlayerViewState viewState;
@@ -353,7 +378,9 @@ class _PlayerInstance {
 
   Future<void> setPreventsDisplaySleepDuringVideoPlayback(
     bool preventsDisplaySleepDuringVideoPlayback,
-  ) => _api.setPreventsDisplaySleepDuringVideoPlayback(preventsDisplaySleepDuringVideoPlayback);
+  ) => _api.setPreventsDisplaySleepDuringVideoPlayback(
+    preventsDisplaySleepDuringVideoPlayback,
+  );
 
   Future<void> seekTo(Duration position) {
     return _api.seekTo(position.inMilliseconds);
@@ -363,9 +390,11 @@ class _PlayerInstance {
     return Duration(milliseconds: await _api.getPosition());
   }
 
-  Future<List<MediaSelectionAudioTrackData>> getAudioTracks() => _api.getAudioTracks();
+  Future<List<MediaSelectionAudioTrackData>> getAudioTracks() =>
+      _api.getAudioTracks();
 
-  Future<void> selectAudioTrack(int trackIndex) => _api.selectAudioTrack(trackIndex);
+  Future<void> selectAudioTrack(int trackIndex) =>
+      _api.selectAudioTrack(trackIndex);
 
   Stream<VideoEvent> get videoEvents {
     _eventSubscription ??= _eventChannel.receiveBroadcastStream().listen(
@@ -406,7 +435,9 @@ class _PlayerInstance {
       ),
       'completed' => VideoEvent(eventType: VideoEventType.completed),
       'bufferingUpdate' => VideoEvent(
-        buffered: (map['values'] as List<dynamic>).map<DurationRange>(_toDurationRange).toList(),
+        buffered: (map['values'] as List<dynamic>)
+            .map<DurationRange>(_toDurationRange)
+            .toList(),
         eventType: VideoEventType.bufferingUpdate,
       ),
       'bufferingStart' => VideoEvent(eventType: VideoEventType.bufferingStart),

@@ -1,4 +1,4 @@
-package uz.flutterwithakmaljon.video_player_pip
+package io.flutter.plugins.videoplayerpip
 
 import android.app.Activity
 import android.app.PictureInPictureParams
@@ -85,6 +85,13 @@ class VideoPlayerPipPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
         }
         Log.d(TAG, "Exit PiP result: $success")
         result.success(success)
+      }
+      "reset" -> {
+        if (isInPipMode) exitPipMode()
+        activePlayerId = null
+        pipRequestedByUser = false
+        playerViewCache.clear()
+        result.success(null)
       }
       "isInPipMode" -> {
         Log.d(TAG, "Checking if in PiP mode: $isInPipMode")

@@ -1,5 +1,5 @@
 name: video_player_custom
-description: Video player widget with Picture-in-Picture support. Fully vendored, no federated deps.
+description: Video player widget with Picture-in-Picture support. Native mobile and Apple backends, with media_kit on Windows and Linux.
 version: 0.0.1
 publish_to: none
 
@@ -12,13 +12,22 @@ flutter:
     platforms:
       android:
         package: io.flutter.plugins.videoplayer
-        pluginClass: VideoPlayerPlugin
+        pluginClass: VideoPlayerCustomPlugin
+        dartPluginClass: VideoPlayerCustom
       ios:
-        pluginClass: VideoPlayerPlugin
+        sharedDarwinSource: true
+        pluginClass: VideoPlayerCustomPlugin
+        dartPluginClass: VideoPlayerCustom
       macos:
-        pluginClass: VideoPlayerPlugin
+        sharedDarwinSource: true
+        pluginClass: VideoPlayerCustomPlugin
+        dartPluginClass: VideoPlayerCustom
+      windows:
+        dartPluginClass: VideoPlayerCustom
+      linux:
+        dartPluginClass: VideoPlayerCustom
       web:
-        pluginClass: VideoPlayerPlugin
+        pluginClass: VideoPlayerCustomWeb
         fileName: video_player_custom_web.dart
 
 dependencies:
@@ -28,10 +37,15 @@ dependencies:
   flutter_web_plugins:
     sdk: flutter
   web: ^1.1.0
+  collection: ^1.19.0
   html: ^0.15.0
   plugin_platform_interface: ^2.1.8
+  video_player_media_kit: ^2.0.0
+  media_kit_libs_windows_video: ^1.0.11
+  media_kit_libs_linux: ^1.2.1
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  leak_tracker_flutter_testing: ^3.0.10
   flutter_lints: ^6.0.0

@@ -1,4 +1,3 @@
-import '../../video_player.dart';
 import 'video_player_custom_pip.dart';
 
 extension VideoPlayerControllerExtension on VideoPlayerController {

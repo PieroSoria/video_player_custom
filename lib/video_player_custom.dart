@@ -23,44 +23,38 @@ import 'package:flutter/foundation.dart';
 import 'package:video_player_platform_interface/video_player_platform_interface.dart';
 
 import 'src/platform_impl/android/android_video_player.dart';
+import 'src/platform_impl/desktop/desktop_video_player.dart';
 import 'src/platform_impl/avfoundation/avfoundation_video_player.dart';
 
 // The PiP library re-exports the full, PiP-enabled `video_player` API.
 export 'src/pip/video_player_custom_pip.dart';
 
-bool _isVideoPlayerCustomRegistered = false;
+/// Dart entry point used by Flutter's generated plugin registrant.
+class VideoPlayerCustom {
+  static void registerWith() => registerVideoPlayerCustom();
+}
 
-/// Binds the platform implementation for the current target.
-///
-/// This is called automatically when the library is first imported. It is
-/// idempotent, so it is safe to call again at any time (e.g. after overriding
-/// the instance in tests).
-///
-/// The web implementation is registered separately by the plugin system
-/// through [VideoPlayerCustomWeb.registerWith].
+/// Explicitly registers the implementation for the current native platform.
+/// Flutter calls this automatically through its generated plugin registrant.
+/// Web registration is handled by VideoPlayerCustomWeb.
 void registerVideoPlayerCustom() {
-  if (_isVideoPlayerCustomRegistered) {
-    return;
-  }
-  _isVideoPlayerCustomRegistered = true;
-
-  if (kIsWeb) {
-    // Handled by `video_player_custom_web.dart` (dart plugin registrant).
-    return;
-  }
-
+  if (kIsWeb) return;
   switch (defaultTargetPlatform) {
     case TargetPlatform.android:
-      VideoPlayerPlatform.instance = AndroidVideoPlayer();
+      if (VideoPlayerPlatform.instance is! AndroidVideoPlayer) {
+        AndroidVideoPlayer.registerWith();
+      }
     case TargetPlatform.iOS:
     case TargetPlatform.macOS:
-      VideoPlayerPlatform.instance = AVFoundationVideoPlayer();
+      if (VideoPlayerPlatform.instance is! AVFoundationVideoPlayer) {
+        AVFoundationVideoPlayer.registerWith();
+      }
     case TargetPlatform.linux:
     case TargetPlatform.windows:
+      registerDesktopVideoPlayer();
     case TargetPlatform.fuchsia:
-      // No supported implementation.
-      break;
+      throw UnsupportedError(
+        'video_player_custom does not support $defaultTargetPlatform',
+      );
   }
 }
-// Registration is handled by the Dart plugin registrant (`registerWith`),
-// matching the official `video_player` package. No top-level call is needed.

@@ -4,11 +4,45 @@
 
 [![pub package](https://img.shields.io/pub/v/video_player.svg)](https://pub.dev/packages/video_player)
 
-A Flutter plugin for iOS, Android and Web for playing back video on a Widget surface.
+A Flutter video player for Android, iOS, macOS, Windows, Linux and web.
 
-|             | Android | iOS   | macOS  | Web   |
-|-------------|---------|-------|--------|-------|
-| **Support** | SDK 24+ | 13.0+ | 10.15+ | Any\* |
+| Platform | Playback backend | Picture-in-Picture |
+|----------|------------------|--------------------|
+| Android SDK 24+ | Vendored Media3 | Android 8+ with device support |
+| iOS 15+ | Shared AVFoundation | Supported devices, using `VideoViewType.platformView` |
+| macOS 12+ | Shared AVFoundation | Not implemented |
+| Windows | media_kit | Not implemented |
+| Linux | media_kit / libmpv | Not implemented |
+| Web | HTML video | Not implemented |
+
+Flutter registers the correct backend automatically. Import
+`package:video_player_custom/video_player_custom.dart` for playback and PiP.
+Unsupported PiP operations return `false`; `reset()` completes without error.
+
+### Code organization
+
+- `lib/video_player.dart`: shared controller and widgets.
+- `lib/src/platform_impl/`: Android, AVFoundation, web and desktop adapters.
+- `lib/src/pip/`: public PiP API and method-channel implementation.
+- `android/`: native playback and PiP, registered together.
+- `darwin/video_player_custom/`: a shared Swift package for iOS and macOS;
+  iOS-only PiP sources are conditionally compiled.
+- Windows and Linux use the native plugins supplied by `media_kit`, so they do
+  not require native platform folders at the package root. The platform folders
+  inside `example/` are the application runners and are required to build it.
+
+### Windows and Linux
+
+The [media_kit desktop backend](https://pub.dev/packages/video_player_media_kit)
+and its native dependency packages are included in this
+package. Linux additionally requires libmpv and the GTK/OpenGL development
+libraries. On Ubuntu, install `libmpv-dev libgtk-3-dev libepoxy-dev` along with
+Flutter's Linux build prerequisites. Windows requires Flutter's Visual Studio
+C++ desktop toolchain. Build and test each desktop app on its own operating
+system. Advanced track selection and view options depend on backend support.
+
+Apple builds use Swift Package Manager for this plugin and CocoaPods for
+dependencies that have not yet adopted Swift Package Manager.
 
 ![The example app running in iOS](https://github.com/flutter/packages/blob/main/packages/video_player/video_player/doc/demo_ipod.gif?raw=true)
 
@@ -59,7 +93,7 @@ The `VideoPlayerOptions.mixWithOthers` option can't be implemented in web, at le
 <?code-excerpt "basic.dart (basic-example)"?>
 ```dart
 import 'package:flutter/material.dart';
-import 'package:video_player/video_player.dart';
+import 'package:video_player_custom/video_player_custom.dart';
 
 void main() => runApp(const VideoApp());
 
@@ -141,7 +175,7 @@ await controller.enterPipMode();
 await controller.enterPipMode(width: 220, height: 124);
 
 // React to PiP lifecycle changes.
-controller.pipEventStream.listen((PipEvent event) {
+controller.onPipModeChanged.listen((PipModeChanged event) {
   debugPrint('isInPip=${event.isInPip} isRestored=${event.isRestored}');
 });
 
@@ -149,9 +183,10 @@ controller.pipEventStream.listen((PipEvent event) {
 await controller.exitPipMode();
 ```
 
-PiP support depends on the platform (enabled on Android via the dedicated `pipActivity`, and on
-iOS/macOS via the native AVPlayer PiP). Use `controller.pipSupported()` to query support before
-entering PiP mode.
+Use `controller.isPipSupported()` before entering PiP. Android's host activity
+must declare `android:supportsPictureInPicture="true"`. On iOS, enable the audio
+background mode and create the controller with `VideoViewType.platformView` so
+PiP can use the visible player's layer. The example includes these settings.
 
 ### Loading and error builders
 

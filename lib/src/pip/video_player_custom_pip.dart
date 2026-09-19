@@ -53,7 +53,7 @@ class PipModeChanged {
 class VideoPlayerPip {
   static const MethodChannel _channel = MethodChannel('video_player_pip');
 
-  static final VideoPlayerPipPlatform _platform =
+  static VideoPlayerPipPlatform get _platform =>
       VideoPlayerPipPlatform.instance;
 
   /// Checks if the device supports PiP mode
@@ -213,7 +213,8 @@ class VideoPlayerPip {
     _channel.setMethodCallHandler(_handleMethodCall);
   }
 
-  final _onPipModeChangedController = StreamController<PipModeChanged>.broadcast();
+  final _onPipModeChangedController =
+      StreamController<PipModeChanged>.broadcast();
   final _onPipErrorController = StreamController<String>.broadcast();
 
   Future<dynamic> _handleMethodCall(MethodCall call) async {
