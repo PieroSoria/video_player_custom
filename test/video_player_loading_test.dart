@@ -29,6 +29,50 @@ void main() {
     ),
   );
 
+  for (final fails in [false, true]) {
+    testWidgets(
+      'mounted iOS player handles initialize() ${fails ? 'failure' : 'completion'} without a parent rebuild',
+      (tester) async {
+        (VideoPlayerPlatform.instance as FakeVideoPlayerPlatform)
+                .forceInitError =
+            fails;
+        final actual = VideoPlayerController.networkUrl(
+          Uri.parse('https://example.com/video.mp4'),
+          viewType: VideoViewType.platformView,
+        );
+        addTearDown(actual.dispose);
+        await tester.pumpWidget(
+          Directionality(
+            textDirection: TextDirection.ltr,
+            child: VideoPlayer(
+              actual,
+              loadingBuilder: (_, progress) => const Text('Loading'),
+              errorBuilder: (_, error) => const Text('Playback failed'),
+            ),
+          ),
+        );
+        expect(find.text('Loading'), findsOneWidget);
+
+        await tester.runAsync(() async {
+          final initialization = actual.initialize();
+          if (fails) {
+            await expectLater(initialization, throwsA(isA<Exception>()));
+          } else {
+            await initialization;
+          }
+        });
+        await tester.pumpAndSettle();
+        expect(find.text('Loading'), findsNothing);
+        expect(
+          find.text('Playback failed'),
+          fails ? findsOneWidget : findsNothing,
+        );
+        expect(find.byType(Texture), fails ? findsNothing : findsOneWidget);
+      },
+      variant: TargetPlatformVariant({TargetPlatform.iOS}),
+    );
+  }
+
   testWidgets('iOS replaces initial loading when the same player becomes ready', (
     tester,
   ) async {

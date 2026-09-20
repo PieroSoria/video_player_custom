@@ -1,4 +1,4 @@
-﻿// Copyright 2013 The Flutter Authors
+// Copyright 2013 The Flutter Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -27,14 +27,24 @@ class _VideoAppState extends State<VideoApp> {
   @override
   void initState() {
     super.initState();
-    _controller =
-        VideoPlayerController.networkUrl(
-            Uri.parse('https://flutter.github.io/assets-for-api-docs/assets/videos/bee.mp4'),
-          )
-          ..initialize().then((_) {
-            // Ensure the first frame is shown after the video is initialized, even before the play button has been pressed.
-            setState(() {});
-          });
+    _controller = VideoPlayerController.networkUrl(
+      Uri.parse(
+        'https://flutter.github.io/assets-for-api-docs/assets/videos/bee.mp4',
+      ),
+      viewType: VideoViewType.platformView,
+    );
+    _initializeVideo();
+  }
+
+  Future<void> _initializeVideo() async {
+    try {
+      await _controller.initialize();
+      if (mounted) await _controller.play();
+    } catch (error) {
+      if (mounted && !_controller.value.hasError) {
+        _controller.value = VideoPlayerValue.erroneous(error.toString());
+      }
+    }
   }
 
   @override
@@ -43,20 +53,28 @@ class _VideoAppState extends State<VideoApp> {
       title: 'Video Demo',
       home: Scaffold(
         body: Center(
-          child: _controller.value.isInitialized
-              ? AspectRatio(
-                  aspectRatio: _controller.value.aspectRatio,
-                  child: VideoPlayer(_controller),
-                )
-              : Container(),
+          child: AspectRatio(
+            aspectRatio: 16 / 9,
+            child: VideoPlayer(
+              _controller,
+              loadingBuilder: (_, progress) =>
+                  const Center(child: CircularProgressIndicator()),
+              errorBuilder: (_, error) =>
+                  Center(child: Text(error ?? 'Unable to play video')),
+            ),
+          ),
         ),
         floatingActionButton: FloatingActionButton(
           onPressed: () {
             setState(() {
-              _controller.value.isPlaying ? _controller.pause() : _controller.play();
+              _controller.value.isPlaying
+                  ? _controller.pause()
+                  : _controller.play();
             });
           },
-          child: Icon(_controller.value.isPlaying ? Icons.pause : Icons.play_arrow),
+          child: Icon(
+            _controller.value.isPlaying ? Icons.pause : Icons.play_arrow,
+          ),
         ),
       ),
     );
@@ -70,4 +88,3 @@ class _VideoAppState extends State<VideoApp> {
 }
 
 // #enddocregion basic-example
-

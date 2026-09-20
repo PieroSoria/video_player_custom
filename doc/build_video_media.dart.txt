@@ -1,0 +1,304 @@
+part of 'build_media_widget.dart';
+
+class _BuildVideoMedia extends StatefulWidget {
+  final MediaEntity media;
+  final bool isActive;
+  final bool isDragging;
+
+  const _BuildVideoMedia({
+    required this.media,
+    required this.isActive,
+    required this.isDragging,
+  });
+
+  @override
+  State<_BuildVideoMedia> createState() => _BuildVideoMediaState();
+}
+
+class _BuildVideoMediaState extends State<_BuildVideoMedia>
+    with WidgetsBindingObserver {
+  final ValueNotifier<VideoPlayerController?> _controllerNotifier =
+      ValueNotifier<VideoPlayerController?>(null);
+  Future<void>? _initialization;
+
+  bool _isCurrent(VideoPlayerController controller) =>
+      mounted && identical(_controllerNotifier.value, controller);
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    if (widget.isActive) {
+      _initVideo();
+    }
+  }
+
+  Future<void> _initVideo() async {
+    final videoUrl = widget.media.url;
+    final videoPath = widget.media.localFile?.path;
+
+    if (_controllerNotifier.value != null) {
+      final controller = _controllerNotifier.value!;
+      try {
+        await _initialization;
+      } catch (_) {
+        return; // El error permanece visible en errorBuilder.
+      }
+      if (!_isCurrent(controller) ||
+          !widget.isActive ||
+          controller.value.hasError)
+        return;
+      final isInPip = await controller.isInPipMode();
+      if (!_isCurrent(controller)) return;
+      if (isInPip) {
+        await controller.exitPipMode();
+      }
+      if (_isCurrent(controller) && widget.isActive) await controller.play();
+      return;
+    }
+
+    final controller = (videoUrl != null && videoUrl.isNotEmpty)
+        ? VideoPlayerController.networkUrl(
+            Uri.parse(videoUrl),
+            viewType: VideoViewType.platformView,
+            formatHint: VideoFormat.hls,
+            videoPlayerOptions: VideoPlayerOptions(
+              allowBackgroundPlayback: true,
+            ),
+          )
+        : (videoPath != null && videoPath.isNotEmpty)
+        ? VideoPlayerController.file(
+            File(videoPath),
+            viewType: VideoViewType.platformView,
+            videoPlayerOptions: VideoPlayerOptions(
+              allowBackgroundPlayback: true,
+            ),
+          )
+        : null;
+
+    if (controller == null) return;
+
+    // Montar VideoPlayer desde el inicio permite mostrar sus builders.
+    _controllerNotifier.value = controller;
+    try {
+      _initialization = controller.initialize();
+      await _initialization;
+      if (!_isCurrent(controller)) return;
+      await controller.setLooping(true);
+      if (_isCurrent(controller) && widget.isActive) await controller.play();
+    } catch (e) {
+      // Conservar el controlador para que VideoPlayer muestre errorBuilder.
+      if (_isCurrent(controller) && !controller.value.hasError) {
+        controller.value = VideoPlayerValue.erroneous(e.toString());
+      }
+      debugPrint("Error al reproducir VideoPlayer: $e");
+    }
+  }
+
+  Future<void> _pauseVideo() async {
+    final controller = _controllerNotifier.value;
+    if (controller != null) {
+      final isInPip = await controller.isInPipMode();
+      if (!isInPip) {
+        await controller.pause();
+      }
+    }
+  }
+
+  Future<void> _togglePlayPause() async {
+    final controller = _controllerNotifier.value;
+    if (controller != null) {
+      if (controller.value.isPlaying) {
+        await controller.pause();
+      } else {
+        await controller.play();
+      }
+    }
+  }
+
+  Future<void> _enterPip() async {
+    final controller = _controllerNotifier.value;
+    if (controller == null) return;
+
+    final isSupported = await controller.isPipSupported();
+    if (!isSupported) return;
+
+    final entered = await controller.enterPipMode();
+    if (entered && mounted) {
+      if (context.canPop()) {
+        context.pop();
+      } else {
+        final postViewerBloc = context.read<PostViewerBloc>();
+        final isProfile = postViewerBloc.state.postViewerArgs.isProfile;
+        context.goNamed(
+          isProfile
+              ? HomeSubRoutesPro.profile.name
+              : HomeSubRoutesPro.feed.name,
+        );
+      }
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _BuildVideoMedia oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (!oldWidget.isActive && widget.isActive) {
+      _initVideo();
+    } else if (oldWidget.isActive && !widget.isActive) {
+      _pauseVideo();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) async {
+    super.didChangeAppLifecycleState(state);
+    final controller = _controllerNotifier.value;
+    if (!widget.isActive || controller == null) return;
+
+    final isInPip = await controller.isInPipMode();
+
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.inactive:
+        if (!isInPip && controller.value.isPlaying) {
+          await controller.pause();
+        }
+        break;
+
+      case AppLifecycleState.resumed:
+        if (isInPip) {
+          await controller.exitPipMode();
+        }
+        break;
+
+      default:
+        break;
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+
+    final controller = _controllerNotifier.value;
+    _controllerNotifier.value = null;
+
+    if (controller != null) {
+      controller.isInPipMode().then((isInPip) {
+        if (!isInPip) {
+          controller.pause();
+          controller.dispose();
+          VideoPlayerPip.reset();
+        }
+      });
+    }
+
+    _controllerNotifier.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      onPopInvokedWithResult: (didPop, result) {},
+      child: ValueListenableBuilder<VideoPlayerController?>(
+        valueListenable: _controllerNotifier,
+        builder: (context, controller, child) {
+          // Solo falta controlador mientras este elemento está inactivo.
+          // No esperar isInitialized aquí: esa transición la maneja VideoPlayer.
+          if (controller == null) {
+            if (widget.media.blurHash != null) {
+              return Image(
+                image: BlurHashImageProvider(widget.media.blurHash!),
+                fit: BoxFit.cover,
+              );
+            }
+            return const SizedBox.shrink();
+          }
+
+          // VideoPlayer escucha al controlador y cambia sus builders internamente.
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              // Capa 1: Video Nativo
+              IgnorePointer(
+                child: SizedBox.expand(
+                  child: VideoPlayer(
+                    controller,
+                    loadingBuilder: (context, progress) {
+                      final blurHash = widget.media.blurHash;
+                      return Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          if (blurHash != null)
+                            Image(
+                              image: BlurHashImageProvider(blurHash),
+                              fit: BoxFit.cover,
+                            ),
+                          const Center(child: CircularProgressIndicator()),
+                        ],
+                      );
+                    },
+                    errorBuilder: (context, error) => const Center(
+                      child: Text(
+                        'No se pudo reproducir el video',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+              // Capa 2: Control de Gestos
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () async {
+                    if (!await controller.isInPipMode()) {
+                      _togglePlayPause();
+                    }
+                  },
+                  onPanUpdate: (details) {
+                    if (details.delta.dx.abs() > details.delta.dy.abs()) {
+                      OverscrollNotification(
+                        metrics: FixedScrollMetrics(
+                          minScrollExtent: 0,
+                          maxScrollExtent: 0,
+                          pixels: 0,
+                          viewportDimension: 0,
+                          axisDirection: AxisDirection.right,
+                          devicePixelRatio: MediaQuery.devicePixelRatioOf(
+                            context,
+                          ),
+                        ),
+                        context: context,
+                        overscroll: -details.delta.dx,
+                      ).dispatch(context);
+                    }
+                  },
+                ),
+              ),
+
+              // Capa 3: Botón PiP
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: IconButton(
+                    style: IconButton.styleFrom(
+                      backgroundColor: Colors.black38,
+                      foregroundColor: Colors.white,
+                    ),
+                    onPressed: _enterPip,
+                    icon: const Icon(Icons.picture_in_picture_alt),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}

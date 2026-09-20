@@ -224,6 +224,15 @@ PiP can use the visible player's layer. The example includes these settings.
 [`VideoPlayer`] can take over the loading (initializing/buffering) and error states with the
 [`loadingBuilder`] and [`errorBuilder`] arguments, respectively:
 
+Mount `VideoPlayer(controller, ...)` before initialization finishes. Assign the
+controller to your widget as soon as you create it, then call `initialize()` and
+`play()`. Do not hide `VideoPlayer` behind an external `isInitialized` condition:
+its builders must be mounted to display initialization progress and failures.
+Keep the controller mounted on an initialization error so `errorBuilder` can
+display it. The widget listens for state changes and fades loading out over
+250 milliseconds, without requiring a parent `setState` or value listener.
+See `example/lib/basic.dart` for the complete flow.
+
 ```dart
 VideoPlayer(
   controller,
