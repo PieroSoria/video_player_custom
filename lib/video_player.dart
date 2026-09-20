@@ -1191,6 +1191,8 @@ class VideoPlayer extends StatefulWidget {
   /// Widget shown while the controller is loading (not yet initialized) or
   /// buffering, with the buffered [progress] (`0.0`–`1.0`). Defaults to a
   /// black container.
+  /// Fades out over 250 milliseconds when the video becomes ready, keeping
+  /// the native video view mounted underneath.
   final VideoPlayerLoadingBuilder? loadingBuilder;
 
   /// Widget shown when the controller reports an error
@@ -1204,9 +1206,21 @@ class VideoPlayer extends StatefulWidget {
 
 class _VideoPlayerState extends State<VideoPlayer> {
   late int _playerId;
+  late VideoPlayerValue _lastValue;
   void _controllerDidUpdateValue() {
     final int newPlayerId = widget.controller.playerId;
-    if (newPlayerId != _playerId) {
+    final VideoPlayerValue value = widget.controller.value;
+    final bool shouldRebuild = newPlayerId != _playerId ||
+        value.isInitialized != _lastValue.isInitialized ||
+        value.isBuffering != _lastValue.isBuffering ||
+        value.errorDescription != _lastValue.errorDescription ||
+        value.rotationCorrection != _lastValue.rotationCorrection ||
+        (widget.loadingBuilder != null &&
+            (!value.isInitialized || value.isBuffering) &&
+            (value.buffered != _lastValue.buffered ||
+                value.duration != _lastValue.duration));
+    _lastValue = value;
+    if (shouldRebuild) {
       setState(() {
         _playerId = newPlayerId;
       });
@@ -1217,6 +1231,7 @@ class _VideoPlayerState extends State<VideoPlayer> {
   void initState() {
     super.initState();
     _playerId = widget.controller.playerId;
+    _lastValue = widget.controller.value;
     WindowsPipOverlay.register(this, widget.controller, context);
     // Need to listen for initialization events since the actual widget ID
     // becomes available after asynchronous initialization finishes.
@@ -1231,6 +1246,7 @@ class _VideoPlayerState extends State<VideoPlayer> {
       WindowsPipOverlay.register(this, widget.controller, context);
       oldWidget.controller.removeListener(_controllerDidUpdateValue);
       _playerId = widget.controller.playerId;
+      _lastValue = widget.controller.value;
       widget.controller.addListener(_controllerDidUpdateValue);
     }
   }
@@ -1244,12 +1260,7 @@ class _VideoPlayerState extends State<VideoPlayer> {
 
   @override
   Widget build(BuildContext context) {
-    return _playerId == VideoPlayerController.kUninitializedPlayerId
-        ? Container()
-        : _VideoPlayerWithRotation(
-            rotation: widget.controller.value.rotationCorrection,
-            child: _buildContent(context),
-          );
+    return _buildContent(context);
   }
 
   Widget _buildContent(BuildContext context) {
@@ -1264,13 +1275,44 @@ class _VideoPlayerState extends State<VideoPlayer> {
             );
     }
 
-    if (widget.loadingBuilder != null &&
-        (!value.isInitialized || value.isBuffering)) {
-      return widget.loadingBuilder!(context, _bufferedProgress(value));
+    final bool isLoading = !value.isInitialized || value.isBuffering;
+    final Widget video = _playerId == VideoPlayerController.kUninitializedPlayerId
+        ? Container()
+        : _VideoPlayerWithRotation(
+            rotation: value.rotationCorrection,
+            child: _videoPlayerPlatform.buildViewWithOptions(
+              platform_interface.VideoViewOptions(playerId: _playerId),
+            ),
+          );
+    if (widget.loadingBuilder == null) {
+      return video;
     }
-
-    return _videoPlayerPlatform.buildViewWithOptions(
-      platform_interface.VideoViewOptions(playerId: _playerId),
+    // Keep the native iOS view (and its AVPlayerLayer) mounted while loading.
+    // Removing it during buffering would also invalidate the layer used by PiP.
+    return Stack(
+      fit: StackFit.passthrough,
+      children: <Widget>[
+        video,
+        Positioned.fill(
+          child: IgnorePointer(
+            ignoring: !isLoading,
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 250),
+              switchInCurve: Curves.easeInOut,
+              switchOutCurve: Curves.easeInOut,
+              child: isLoading
+                  ? SizedBox.expand(
+                      key: const ValueKey('video-loading'),
+                      child: ColoredBox(
+                        color: Colors.black,
+                        child: widget.loadingBuilder!(context, _bufferedProgress(value)),
+                      ),
+                    )
+                  : const SizedBox.shrink(key: ValueKey('video-ready')),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
