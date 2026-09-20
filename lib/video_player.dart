@@ -1267,19 +1267,10 @@ class _VideoPlayerState extends State<VideoPlayer> {
         Positioned.fill(
           child: IgnorePointer(
             ignoring: !isLoading,
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 250),
-              switchInCurve: Curves.easeInOut,
-              switchOutCurve: Curves.easeInOut,
-              child: isLoading
-                  ? SizedBox.expand(
-                      key: const ValueKey('video-loading'),
-                      child: ColoredBox(
-                        color: Colors.black,
-                        child: widget.loadingBuilder!(context, _bufferedProgress(value)),
-                      ),
-                    )
-                  : const SizedBox.shrink(key: ValueKey('video-ready')),
+            child: _VideoLoadingOverlay(
+              isLoading: isLoading,
+              progress: _bufferedProgress(value),
+              builder: widget.loadingBuilder!,
             ),
           ),
         ),
@@ -1300,6 +1291,60 @@ class _VideoPlayerState extends State<VideoPlayer> {
       return null;
     }
     return (bufferedMs / totalMs).clamp(0.0, 1.0);
+  }
+}
+
+/// One persistent loading layer, including when buffering reverses mid-fade.
+class _VideoLoadingOverlay extends StatefulWidget {
+  const _VideoLoadingOverlay({
+    required this.isLoading,
+    required this.progress,
+    required this.builder,
+  });
+
+  final bool isLoading;
+  final double? progress;
+  final VideoPlayerLoadingBuilder builder;
+
+  @override
+  State<_VideoLoadingOverlay> createState() => _VideoLoadingOverlayState();
+}
+
+class _VideoLoadingOverlayState extends State<_VideoLoadingOverlay> {
+  late bool _showLoading;
+
+  @override
+  void initState() {
+    super.initState();
+    _showLoading = widget.isLoading;
+  }
+
+  @override
+  void didUpdateWidget(_VideoLoadingOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isLoading) _showLoading = true;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedOpacity(
+      opacity: widget.isLoading ? 1 : 0,
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeInOut,
+      onEnd: () {
+        if (!widget.isLoading && _showLoading) {
+          setState(() => _showLoading = false);
+        }
+      },
+      child: _showLoading
+          ? SizedBox.expand(
+              child: ColoredBox(
+                color: Colors.black,
+                child: widget.builder(context, widget.progress),
+              ),
+            )
+          : const SizedBox.expand(),
+    );
   }
 }
 

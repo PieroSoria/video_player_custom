@@ -137,6 +137,59 @@ void main() {
   }, variant: TargetPlatformVariant({TargetPlatform.iOS}));
 
   testWidgets(
+    'rapid iOS buffering reversals keep one loading layer and the native view',
+    (tester) async {
+      controller.playerId = 7;
+      controller.value = controller.value.copyWith(
+        isInitialized: true,
+        isBuffering: true,
+        duration: const Duration(seconds: 10),
+      );
+      await tester.pumpWidget(player());
+      final videoElement = tester.element(find.byType(Texture));
+      for (var i = 0; i < 10; i++) {
+        controller.value = controller.value.copyWith(isBuffering: i.isOdd);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 30));
+        expect(tester.takeException(), isNull);
+        expect(find.text('Loading: null'), findsOneWidget);
+        expect(tester.element(find.byType(Texture)), same(videoElement));
+      }
+      controller.value = controller.value.copyWith(isBuffering: false);
+      await tester.pumpAndSettle();
+      expect(find.text('Loading: null'), findsNothing);
+    },
+    variant: TargetPlatformVariant({TargetPlatform.iOS}),
+  );
+
+  testWidgets(
+    'changing iOS controller during fade does not duplicate the loading layer',
+    (tester) async {
+      controller.playerId = 7;
+      controller.value = controller.value.copyWith(isInitialized: true, isBuffering: true);
+      await tester.pumpWidget(player());
+      controller.value = controller.value.copyWith(isBuffering: false);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 40));
+
+      final oldController = controller;
+      controller = FakeController();
+      await tester.pumpWidget(player());
+      await oldController.dispose();
+      await tester.pump(const Duration(milliseconds: 40));
+      expect(tester.takeException(), isNull);
+      expect(find.text('Loading: null'), findsOneWidget);
+
+      controller.playerId = 8;
+      controller.value = controller.value.copyWith(isInitialized: true);
+      await tester.pumpAndSettle();
+      expect(find.text('Loading: null'), findsNothing);
+      expect(tester.widget<Texture>(find.byType(Texture)).textureId, 8);
+    },
+    variant: TargetPlatformVariant({TargetPlatform.iOS}),
+  );
+
+  testWidgets(
     'initialization errors replace loading before a player ID exists',
     (tester) async {
       await tester.pumpWidget(player());
