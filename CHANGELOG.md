@@ -1,3 +1,11 @@
+## Unreleased
+
+* Adds Windows compact Picture-in-Picture with play/pause, native window
+  restoration, lifecycle events and automatic cleanup.
+* Adds a Windows media_kit adapter that forwards initialization errors and
+  releases player resources; includes real Windows integration coverage.
+* Adds a PiP button to the example player.
+
 ## 2.14.0
 
 * Adds video quality selection support for HLS/DASH adaptive streams via

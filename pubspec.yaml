@@ -23,6 +23,7 @@ flutter:
         pluginClass: VideoPlayerCustomPlugin
         dartPluginClass: VideoPlayerCustom
       windows:
+        pluginClass: VideoPlayerCustomPluginCApi
         dartPluginClass: VideoPlayerCustom
       linux:
         dartPluginClass: VideoPlayerCustom
@@ -41,6 +42,8 @@ dependencies:
   html: ^0.15.0
   plugin_platform_interface: ^2.1.8
   video_player_media_kit: ^2.0.0
+  media_kit: ^1.2.6
+  media_kit_video: ^2.0.1
   media_kit_libs_windows_video: ^1.0.11
   media_kit_libs_linux: ^1.2.1
 

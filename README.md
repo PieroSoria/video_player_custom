@@ -11,7 +11,7 @@ A Flutter video player for Android, iOS, macOS, Windows, Linux and web.
 | Android SDK 24+ | Vendored Media3 | Android 8+ with device support |
 | iOS 15+ | Shared AVFoundation | Supported devices, using `VideoViewType.platformView` |
 | macOS 12+ | Shared AVFoundation | Not implemented |
-| Windows | media_kit | Not implemented |
+| Windows | media_kit | Compact, always-on-top application window |
 | Linux | media_kit / libmpv | Not implemented |
 | Web | HTML video | Not implemented |
 
@@ -27,8 +27,8 @@ Unsupported PiP operations return `false`; `reset()` completes without error.
 - `android/`: native playback and PiP, registered together.
 - `darwin/video_player_custom/`: a shared Swift package for iOS and macOS;
   iOS-only PiP sources are conditionally compiled.
-- Windows and Linux use the native plugins supplied by `media_kit`, so they do
-  not require native platform folders at the package root. The platform folders
+- Windows and Linux use the native playback plugins supplied by `media_kit`.
+  `windows/` adds native window management for Windows PiP. The platform folders
   inside `example/` are the application runners and are required to build it.
 
 ### Windows and Linux
@@ -40,6 +40,32 @@ libraries. On Ubuntu, install `libmpv-dev libgtk-3-dev libepoxy-dev` along with
 Flutter's Linux build prerequisites. Windows requires Flutter's Visual Studio
 C++ desktop toolchain. Build and test each desktop app on its own operating
 system. Advanced track selection and view options depend on backend support.
+
+### Windows Picture-in-Picture
+
+Use `await controller.enterPipMode(width: 360, height: 240)` after initialization
+while a `VideoPlayer(controller)` is mounted beneath a Navigator/Overlay (as in
+`MaterialApp`). The plugin turns the existing application window into a compact,
+movable, resizable, always-on-top player. It displays only the video and
+play/pause and restore controls. This is a compact mode for the application
+window, not a separate second window; the original screen stays mounted.
+Playback uses the same media_kit player, preserving its position and audio.
+
+Call `controller.exitPipMode()` or use the restore control to restore the original
+window placement, maximized state and always-on-top setting. The native close
+and maximize buttons also restore the application while in PiP. Removing the
+video widget, disposing its controller, or calling `VideoPlayerPip.reset()` exits
+PiP. Only one player may use PiP at a time. The default texture view works on
+Windows; `VideoViewType.platformView` is not required. Dimensions are outer-window
+pixels, clamped to the monitor work area with a minimum size of 160 by 120.
+
+The example player's PiP button exercises this flow. Run the Windows integration
+checks from `example/`:
+
+```sh
+flutter test integration_test/windows_video_player_test.dart -d windows
+flutter build windows --release
+```
 
 Apple builds use Swift Package Manager for this plugin and CocoaPods for
 dependencies that have not yet adopted Swift Package Manager.

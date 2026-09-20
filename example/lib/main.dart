@@ -9,7 +9,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:video_player_custom/video_player.dart';
+import 'package:video_player_custom/video_player_custom.dart';
 
 import 'audio_tracks_demo.dart';
 import 'video_tracks_demo.dart';
@@ -407,6 +407,21 @@ class _ControlsOverlay extends StatelessWidget {
           onTap: () {
             controller.value.isPlaying ? controller.pause() : controller.play();
           },
+        ),
+        Align(
+          alignment: Alignment.bottomRight,
+          child: IconButton(
+            tooltip: 'Picture-in-Picture',
+            icon: const Icon(Icons.picture_in_picture_alt, color: Colors.white),
+            onPressed: () async {
+              final entered = await controller.enterPipMode(width: 360, height: 240);
+              if (!entered && context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Picture-in-Picture is unavailable for this video.')),
+                );
+              }
+            },
+          ),
         ),
         Align(
           alignment: Alignment.topLeft,

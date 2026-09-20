@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../video_player.dart';
 import 'video_player_custom_pip_platform_interface.dart';
+import 'windows_pip_overlay.dart';
 
 export 'video_player_custom_pip_platform_interface.dart'
     show VideoPlayerPipPlatform;
@@ -75,8 +76,9 @@ class VideoPlayerPip {
   /// - [width]: Desired width of the PiP window (in pixels)
   /// - [height]: Desired height of the PiP window (in pixels)
   ///
-  /// Note: The controller must be initialized and should preferably be using
-  /// [VideoViewType.platformView] for PiP to work correctly.
+  /// The controller must be initialized. iOS requires
+  /// [VideoViewType.platformView]. Windows uses the existing texture and requires
+  /// a mounted [VideoPlayer] below an Overlay (for example, inside MaterialApp).
   ///
   /// Example:
   /// ```dart
@@ -91,27 +93,44 @@ class VideoPlayerPip {
     VideoPlayerController controller, {
     int? width,
     int? height,
-  }) {
+  }) async {
     if (controller.playerId == VideoPlayerController.kUninitializedPlayerId) {
       debugPrint(
         'VideoPlayerPip: Cannot enter PiP mode with uninitialized controller',
       );
-      return Future.value(false);
+      return false;
     }
-
-    // iOS implementation uses native PiP
-    return _platform.enterPipMode(
-      controller.playerId,
-      width: width,
-      height: height,
-    );
+    if (!controller.value.isInitialized ||
+        controller.value.hasError ||
+        (width != null && width <= 0) ||
+        (height != null && height <= 0)) {
+      return false;
+    }
+    // Install the native callback handler even without an event subscriber.
+    instance;
+    final windows = WindowsPipOverlay.supportedPlatform;
+    if (windows && !WindowsPipOverlay.show(controller)) return false;
+    try {
+      final entered = await _platform.enterPipMode(
+        controller.playerId,
+        width: width,
+        height: height,
+      );
+      if (windows && !entered) WindowsPipOverlay.remove();
+      return entered;
+    } catch (_) {
+      if (windows) WindowsPipOverlay.remove();
+      rethrow;
+    }
   }
 
   /// Exits Picture-in-Picture mode if currently active.
   ///
   /// Returns `true` if PiP mode was exited successfully, or `false` otherwise.
-  static Future<bool> exitPipMode() {
-    return _platform.exitPipMode();
+  static Future<bool> exitPipMode() async {
+    final exited = await _platform.exitPipMode();
+    if (exited) WindowsPipOverlay.remove();
+    return exited;
   }
 
   /// Checks if the app is currently in PiP mode.
@@ -126,8 +145,9 @@ class VideoPlayerPip {
   ///
   /// Call this when leaving the video screen (e.g. in your widget's `dispose`)
   /// to guarantee a clean slate for the next playback session.
-  static Future<void> reset() {
-    return _platform.reset();
+  static Future<void> reset() async {
+    await _platform.reset();
+    WindowsPipOverlay.remove();
   }
 
   /// Single stream of PiP state changes.
@@ -225,9 +245,11 @@ class VideoPlayerPip {
         break;
       case 'pipModeChanged':
         final bool isInPipMode = call.arguments['isInPipMode'] as bool;
+        if (!isInPipMode) WindowsPipOverlay.remove();
         _onPipModeChangedController.add(PipModeChanged(isInPip: isInPipMode));
         break;
       case 'onPipRestore':
+        WindowsPipOverlay.remove();
         // Unified into the main state stream: PiP is stopping and the user
         // asked to restore the full-screen UI. Carry the native AVPlayer
         // position so playback can resume exactly where it was left.

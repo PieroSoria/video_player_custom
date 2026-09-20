@@ -14,6 +14,7 @@ import 'package:video_player_platform_interface/video_player_platform_interface.
     as platform_interface;
 
 import 'src/closed_caption_file.dart';
+import 'src/pip/windows_pip_overlay.dart';
 
 export 'package:video_player_platform_interface/video_player_platform_interface.dart'
     show
@@ -700,6 +701,7 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
 
   @override
   Future<void> dispose() async {
+    WindowsPipOverlay.controllerDisposed(this);
     if (_isDisposed) {
       return;
     }
@@ -1215,6 +1217,7 @@ class _VideoPlayerState extends State<VideoPlayer> {
   void initState() {
     super.initState();
     _playerId = widget.controller.playerId;
+    WindowsPipOverlay.register(this, widget.controller, context);
     // Need to listen for initialization events since the actual widget ID
     // becomes available after asynchronous initialization finishes.
     widget.controller.addListener(_controllerDidUpdateValue);
@@ -1224,6 +1227,8 @@ class _VideoPlayerState extends State<VideoPlayer> {
   void didUpdateWidget(VideoPlayer oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.controller != widget.controller) {
+      WindowsPipOverlay.unregister(this);
+      WindowsPipOverlay.register(this, widget.controller, context);
       oldWidget.controller.removeListener(_controllerDidUpdateValue);
       _playerId = widget.controller.playerId;
       widget.controller.addListener(_controllerDidUpdateValue);
@@ -1232,6 +1237,7 @@ class _VideoPlayerState extends State<VideoPlayer> {
 
   @override
   void dispose() {
+    WindowsPipOverlay.unregister(this);
     widget.controller.removeListener(_controllerDidUpdateValue);
     super.dispose();
   }
