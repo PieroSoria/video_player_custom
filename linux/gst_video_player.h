@@ -1,6 +1,8 @@
 #ifndef PLUGIN_LINUX_GST_VIDEO_PLAYER_H_
 #define PLUGIN_LINUX_GST_VIDEO_PLAYER_H_
 
+#include "desktop_task_poster.h"
+
 #include <flutter/texture_registrar.h>
 
 #include <gst/app/gstappsink.h>
@@ -45,12 +47,15 @@ struct PlayerEvent {
 /// pulled from an appsink (RGBA, newest-only) and pushed into a Flutter
 /// pixel-buffer texture. Video is paced against the wall clock so that the
 /// (clock-driven) audio stays in sync.
-class GstVideoPlayer {
+class GstVideoPlayer
+    : public std::enable_shared_from_this<GstVideoPlayer> {
  public:
   using EventCallback = std::function<void(const PlayerEvent&)>;
 
-  /// |textures| must outlive the player.
+  /// |textures| must outlive the player. Event and texture notifications are
+  /// marshalled to the platform thread through |poster|.
   GstVideoPlayer(std::shared_ptr<flutter::TextureRegistrar> textures,
+                 std::shared_ptr<TaskPoster> poster,
                  EventCallback on_event);
   ~GstVideoPlayer();
 
@@ -116,6 +121,7 @@ class GstVideoPlayer {
   void QueryDuration();
 
   std::shared_ptr<flutter::TextureRegistrar> textures_;
+  std::shared_ptr<TaskPoster> poster_;
   std::unique_ptr<flutter::TextureVariant> texture_;
   int64_t texture_id_ = -1;
 

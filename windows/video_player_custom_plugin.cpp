@@ -1,5 +1,6 @@
 #include "include/video_player_custom/video_player_custom_plugin_c_api.h"
 
+#include "desktop_task_poster.h"
 #include "wmf_video_player.h"
 
 #include <flutter/event_channel.h>
@@ -11,6 +12,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -22,6 +24,89 @@ namespace {
 
 using flutter::EncodableMap;
 using flutter::EncodableValue;
+
+// ---------------------------------------------------------------------------
+// Platform-thread task poster.
+// ---------------------------------------------------------------------------
+
+// Marshals tasks onto the Flutter platform thread using a message-only window.
+// The player's pump thread posts messages here; the platform thread drains them
+// in its window loop, where channel and texture calls are allowed.
+class WindowsTaskPoster : public video_player_custom::TaskPoster {
+ public:
+  WindowsTaskPoster() {
+    constexpr const wchar_t kClassName[] = L"VideoPlayerCustom_TaskPoster";
+    WNDCLASS wc = {};
+    wc.lpfnWndProc = &WindowsTaskPoster::WindowProc;
+    wc.hInstance = GetModuleHandle(nullptr);
+    wc.lpszClassName = kClassName;
+    if (RegisterClass(&wc) == 0 &&
+        GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+      return;
+    }
+    message_ = RegisterWindowMessage(L"VideoPlayerCustom_PostPlatformTask");
+    window_ = CreateWindowEx(0, kClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE,
+                             nullptr, wc.hInstance, this);
+    if (window_) {
+      SetWindowLongPtr(window_, GWLP_USERDATA,
+                       reinterpret_cast<LONG_PTR>(this));
+    }
+  }
+
+  ~WindowsTaskPoster() override {
+    std::deque<std::function<void()>> leftover;
+    if (!window_) return;
+    closed_ = true;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      leftover.swap(tasks_);
+    }
+    DestroyWindow(window_);
+    window_ = nullptr;
+    // Drain on the (platform) thread destroying the poster.
+    for (auto& task : leftover) task();
+  }
+
+  void Post(std::function<void()> task) override {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (closed_) return;
+      tasks_.push_back(std::move(task));
+    }
+    if (window_) {
+      PostMessage(window_, message_, 0, 0);
+    }
+  }
+
+ private:
+  static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
+                                     LPARAM lparam) {
+    auto* self = reinterpret_cast<WindowsTaskPoster*>(
+        GetWindowLongPtr(window, GWLP_USERDATA));
+    if (self && message == self->message_) {
+      self->RunPending();
+      return 0;
+    }
+    return DefWindowProc(window, message, wparam, lparam);
+  }
+
+  void RunPending() {
+    std::deque<std::function<void()>> pending;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      pending.swap(tasks_);
+    }
+    for (auto& task : pending) {
+      task();
+    }
+  }
+
+  HWND window_ = nullptr;
+  UINT message_ = WM_APP + 0x41;
+  std::mutex mutex_;
+  std::deque<std::function<void()>> tasks_;
+  bool closed_ = false;
+};
 
 // ---------------------------------------------------------------------------
 // Shared argument readers.
@@ -305,6 +390,7 @@ class DesktopVideoPlayerPlugin : public flutter::Plugin {
         // The registrar owns the TextureRegistrar; keep a borrowed shared_ptr.
         textures_(registrar->texture_registrar(),
                   [](flutter::TextureRegistrar*) {}),
+        poster_(std::make_shared<WindowsTaskPoster>()),
         channel_(std::make_unique<flutter::MethodChannel<EncodableValue>>(
             registrar->messenger(), "video_player_custom/desktop",
             &flutter::StandardMethodCodec::GetInstance())) {
@@ -408,7 +494,7 @@ class DesktopVideoPlayerPlugin : public flutter::Plugin {
         std::make_unique<DesktopEventStreamHandler>(state));
 
     entry->player = std::make_shared<video_player_custom::WmfVideoPlayer>(
-        textures_,
+        textures_, poster_,
         [state](const video_player_custom::PlayerEvent& event) {
           state->Emit(event);
         });
@@ -457,6 +543,7 @@ class DesktopVideoPlayerPlugin : public flutter::Plugin {
 
   flutter::PluginRegistrarWindows* registrar_;
   std::shared_ptr<flutter::TextureRegistrar> textures_;
+  std::shared_ptr<video_player_custom::TaskPoster> poster_;
   std::unique_ptr<flutter::MethodChannel<EncodableValue>> channel_;
   std::mutex players_mutex_;
   std::map<int64_t, std::unique_ptr<DesktopPlayerEntry>> players_;

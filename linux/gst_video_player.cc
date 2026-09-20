@@ -29,8 +29,11 @@ int64_t MonotonicUs() { return static_cast<int64_t>(g_get_monotonic_time()); }
 
 GstVideoPlayer::GstVideoPlayer(
     std::shared_ptr<flutter::TextureRegistrar> textures,
+    std::shared_ptr<TaskPoster> poster,
     EventCallback on_event)
-    : textures_(std::move(textures)), on_event_(std::move(on_event)) {
+    : textures_(std::move(textures)),
+      poster_(std::move(poster)),
+      on_event_(std::move(on_event)) {
   pixel_buffer_.buffer = nullptr;
   pixel_buffer_.width = 0;
   pixel_buffer_.height = 0;
@@ -119,7 +122,16 @@ GstVideoPlayer::Command GstVideoPlayer::PopCommand() {
 }
 
 void GstVideoPlayer::Emit(PlayerEvent event) {
-  if (on_event_) on_event_(event);
+  if (!poster_) {
+    if (on_event_) on_event_(event);
+    return;
+  }
+  // Channel sends must happen on the platform thread; the control thread runs
+  // on its own thread. Holding |self| keeps the player alive until the task
+  // runs.
+  auto self = shared_from_this();
+  poster_->Post(
+      [self, event]() { if (self->on_event_) self->on_event_(event); });
 }
 
 void GstVideoPlayer::PumpLoop() {
@@ -385,7 +397,12 @@ void GstVideoPlayer::PresentSample(GstSample* sample) {
     frame_slot_index_ = (frame_slot_index_ + 1) % kFrameSlots;
   }
   if (textures_) {
-    textures_->MarkTextureFrameAvailable(texture_id_);
+    // The engine must be told from the platform thread, mirroring Emit.
+    auto self = shared_from_this();
+    poster_->Post([self]() {
+      if (self->disposed_) return;
+      self->textures_->MarkTextureFrameAvailable(self->texture_id_);
+    });
   }
 }
 

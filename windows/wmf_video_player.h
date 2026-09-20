@@ -1,6 +1,8 @@
 #ifndef PLUGIN_WINDOWS_WMF_VIDEO_PLAYER_H_
 #define PLUGIN_WINDOWS_WMF_VIDEO_PLAYER_H_
 
+#include "desktop_task_poster.h"
+
 #include <flutter/texture_registrar.h>
 
 #include <audioclient.h>
@@ -92,12 +94,15 @@ class AudioSink {
 /// Decoded video frames are converted to 32-bit BGRA and pushed into a
 /// Flutter pixel-buffer texture; decoded PCM audio is rendered through
 /// [AudioSink].
-class WmfVideoPlayer {
+class WmfVideoPlayer
+    : public std::enable_shared_from_this<WmfVideoPlayer> {
  public:
   using EventCallback = std::function<void(const PlayerEvent&)>;
 
-  /// |textures| must outlive the player.
+  /// |textures| must outlive the player. Event and texture notifications are
+  /// marshalled to the platform thread through |poster|.
   WmfVideoPlayer(std::shared_ptr<flutter::TextureRegistrar> textures,
+                 std::shared_ptr<TaskPoster> poster,
                  EventCallback on_event);
   ~WmfVideoPlayer();
 
@@ -141,6 +146,8 @@ class WmfVideoPlayer {
 
   void PumpLoop();
   bool SetupMedia(std::string* error);
+  bool ConfigureVideoOutput(ComPtr<IMFMediaType>* out_type,
+                            std::string* error);
   void ReadPlayStep();
   bool WriteAudioForDeadline(int64_t deadline_ms);
   bool has_video_stream_audio_deadline(bool has_audio) const;
@@ -160,6 +167,7 @@ class WmfVideoPlayer {
   static std::string HResultString(HRESULT hr);
 
   std::shared_ptr<flutter::TextureRegistrar> textures_;
+  std::shared_ptr<TaskPoster> poster_;
   std::unique_ptr<flutter::TextureVariant> texture_;
   int64_t texture_id_ = -1;
 

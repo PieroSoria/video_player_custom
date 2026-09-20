@@ -244,8 +244,11 @@ void AudioSink::SetVolume(float volume) {
 
 WmfVideoPlayer::WmfVideoPlayer(
     std::shared_ptr<flutter::TextureRegistrar> textures,
+    std::shared_ptr<TaskPoster> poster,
     EventCallback on_event)
-    : textures_(std::move(textures)), on_event_(std::move(on_event)) {
+    : textures_(std::move(textures)),
+      poster_(std::move(poster)),
+      on_event_(std::move(on_event)) {
   pixel_buffer_.buffer = nullptr;
   pixel_buffer_.width = 0;
   pixel_buffer_.height = 0;
@@ -336,7 +339,15 @@ WmfVideoPlayer::Command WmfVideoPlayer::PopCommand() {
 }
 
 void WmfVideoPlayer::Emit(PlayerEvent event) {
-  if (on_event_) on_event_(event);
+  if (!poster_) {
+    if (on_event_) on_event_(event);
+    return;
+  }
+  // Channel sends must happen on the platform thread; the pump thread runs on
+  // its own thread. Holding |self| keeps the player alive until the task runs.
+  auto self = shared_from_this();
+  poster_->Post(
+      [self, event]() { if (self->on_event_) self->on_event_(event); });
 }
 
 void WmfVideoPlayer::PumpLoop() {
@@ -432,6 +443,10 @@ bool WmfVideoPlayer::SetupMedia(std::string* error) {
     return false;
   }
   attributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
+  // Let the source reader inject the video processor so RGB32 output is
+  // available for sources whose decoders do not emit it natively.
+  attributes->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING,
+                        TRUE);
 
   hr = MFCreateSourceReaderFromURL(WideFromUtf8(url_).c_str(),
                                    attributes.Get(), &reader_);
@@ -506,38 +521,28 @@ bool WmfVideoPlayer::SetupMedia(std::string* error) {
   // --- Video stream ---------------------------------------------------------
   video_eof_ = true;
   if (video_stream_ != static_cast<DWORD>(-1)) {
-    ComPtr<IMFMediaType> native_type;
-    hr = reader_->GetCurrentMediaType(video_stream_, &native_type);
-    if (FAILED(hr)) {
-      *error = "Failed to read the video media type: " + HResultToString(hr);
+    ComPtr<IMFMediaType> output_type;
+    if (!ConfigureVideoOutput(&output_type, error)) {
       return false;
     }
+
     UINT32 width = 0, height = 0;
-    MFGetAttributeSize(native_type.Get(), MF_MT_FRAME_SIZE, &width, &height);
-
-    ComPtr<IMFMediaType> rgb_type;
-    MFCreateMediaType(&rgb_type);
-    rgb_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-    rgb_type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
-    rgb_type->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
-    rgb_type->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-    MFSetAttributeSize(rgb_type.Get(), MF_MT_FRAME_SIZE, width ? width : 1,
-                       height ? height : 1);
-    hr = reader_->SetCurrentMediaType(video_stream_, nullptr, rgb_type.Get());
-    if (FAILED(hr)) {
-      *error = "Failed to configure RGB32 output: " + HResultToString(hr);
-      return false;
+    MFGetAttributeSize(output_type.Get(), MF_MT_FRAME_SIZE, &width, &height);
+    if (width == 0 || height == 0) {
+      // Some sources report the frame size only on their native type.
+      ComPtr<IMFMediaType> native_type;
+      if (SUCCEEDED(
+              reader_->GetCurrentMediaType(video_stream_, &native_type))) {
+        MFGetAttributeSize(native_type.Get(), MF_MT_FRAME_SIZE, &width,
+                           &height);
+      }
     }
-
-    ComPtr<IMFMediaType> actual_type;
-    reader_->GetCurrentMediaType(video_stream_, &actual_type);
-    MFGetAttributeSize(actual_type.Get(), MF_MT_FRAME_SIZE, &width, &height);
     video_width_ = width;
     video_height_ = height;
     video_eof_ = false;
 
     UINT32 stride_raw = 0;
-    if (FAILED(actual_type->GetUINT32(MF_MT_DEFAULT_STRIDE, &stride_raw))) {
+    if (FAILED(output_type->GetUINT32(MF_MT_DEFAULT_STRIDE, &stride_raw))) {
       stride_raw = 0;
     }
     int32_t stride = static_cast<int32_t>(stride_raw);
@@ -609,6 +614,58 @@ bool WmfVideoPlayer::SetupMedia(std::string* error) {
     return false;
   }
   return true;
+}
+
+bool WmfVideoPlayer::ConfigureVideoOutput(ComPtr<IMFMediaType>* out_type,
+                                          std::string* error) {
+// 1) Prefer a source-provided RGB32/ARGB32 output type. These come straight
+//    from the (possibly video-processor-enabled) source, so frame size,
+//    stride and interlace fields are always consistent with what the decoder
+//    can produce.
+for (DWORD i = 0;; ++i) {
+    ComPtr<IMFMediaType> available;
+    HRESULT hr = reader_->GetNativeMediaType(video_stream_, i, &available);
+    if (FAILED(hr)) break;
+    GUID subtype = GUID_NULL;
+    available->GetGUID(MF_MT_SUBTYPE, &subtype);
+    if (subtype != MFVideoFormat_RGB32 && subtype != MFVideoFormat_ARGB32) {
+      continue;
+    }
+    if (SUCCEEDED(reader_->SetCurrentMediaType(video_stream_, nullptr,
+                                               available.Get()))) {
+      *out_type = available;
+      return true;
+    }
+  }
+
+  // 2) Fall back to a hand-built RGB32 type. Only carry the frame size when the
+  //    source reports one; forcing a size the decoder cannot match is a common
+  //    cause of MF_E_INVALIDMEDIATYPE.
+  ComPtr<IMFMediaType> native_type;
+  HRESULT hr = reader_->GetCurrentMediaType(video_stream_, &native_type);
+  if (FAILED(hr)) {
+    *error = "Failed to read the video media type: " + HResultToString(hr);
+    return false;
+  }
+  UINT32 width = 0, height = 0;
+  MFGetAttributeSize(native_type.Get(), MF_MT_FRAME_SIZE, &width, &height);
+
+  ComPtr<IMFMediaType> rgb_type;
+  MFCreateMediaType(&rgb_type);
+  rgb_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+  rgb_type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+  rgb_type->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
+  if (width != 0 && height != 0) {
+    MFSetAttributeSize(rgb_type.Get(), MF_MT_FRAME_SIZE, width, height);
+  }
+  hr = reader_->SetCurrentMediaType(video_stream_, nullptr, rgb_type.Get());
+  if (SUCCEEDED(hr)) {
+    *out_type = rgb_type;
+    return true;
+  }
+
+  *error = "Failed to configure RGB32 output: " + HResultToString(hr);
+  return false;
 }
 
 void WmfVideoPlayer::ReadPlayStep() {
@@ -788,7 +845,12 @@ void WmfVideoPlayer::PresentFrame(const ComPtr<IMFSample>& sample) {
   if (!ConvertSampleToFrame(sample, slot)) return;
   frame_slot_index_ = (frame_slot_index_ + 1) % kFrameSlots;
   if (textures_) {
-    textures_->MarkTextureFrameAvailable(texture_id_);
+    // The engine must be told from the platform thread, mirroring Emit.
+    auto self = shared_from_this();
+    poster_->Post([self]() {
+      if (self->disposed_) return;
+      self->textures_->MarkTextureFrameAvailable(self->texture_id_);
+    });
   }
 }
 

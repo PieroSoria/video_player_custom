@@ -1,5 +1,6 @@
 #include "include/video_player_custom/video_player_custom_plugin.h"
 
+#include "desktop_task_poster.h"
 #include "gst_video_player.h"
 
 #include <flutter/event_channel.h>
@@ -22,6 +23,31 @@ namespace {
 
 using flutter::EncodableMap;
 using flutter::EncodableValue;
+
+// ---------------------------------------------------------------------------
+// Platform-thread task poster.
+// ---------------------------------------------------------------------------
+
+// Marshals tasks onto the Flutter platform thread. Flutter Linux runs its main
+// loop through the default GLib main context, so invoking there lands the task
+// on the platform thread where channel and texture calls are allowed.
+class GMainTaskPoster : public video_player_custom::TaskPoster {
+ public:
+  GMainTaskPoster() = default;
+
+  void Post(std::function<void()> task) override {
+    auto* holder = new std::function<void()>(std::move(task));
+    g_main_context_invoke(
+        g_main_context_default(),
+        [](gpointer data) -> gboolean {
+          auto* fn = static_cast<std::function<void()>*>(data);
+          (*fn)();
+          delete fn;
+          return G_SOURCE_REMOVE;
+        },
+        holder);
+  }
+};
 
 // ---------------------------------------------------------------------------
 // Shared argument readers (mirrors the Windows backend).
@@ -175,6 +201,7 @@ class DesktopVideoPlayerPlugin : public flutter::Plugin {
         // The registrar owns the TextureRegistrar; keep a borrowed shared_ptr.
         textures_(registrar->texture_registrar(),
                   [](flutter::TextureRegistrar*) {}),
+        poster_(std::make_shared<GMainTaskPoster>()),
         channel_(std::make_unique<flutter::MethodChannel<EncodableValue>>(
             registrar->messenger(), "video_player_custom/desktop",
             &flutter::StandardMethodCodec::GetInstance())) {
@@ -283,7 +310,7 @@ class DesktopVideoPlayerPlugin : public flutter::Plugin {
         std::make_unique<DesktopEventStreamHandler>(state));
 
     entry->player = std::make_shared<video_player_custom::GstVideoPlayer>(
-        textures_,
+        textures_, poster_,
         [state](const video_player_custom::PlayerEvent& event) {
           state->Emit(event);
         });
@@ -332,6 +359,7 @@ class DesktopVideoPlayerPlugin : public flutter::Plugin {
 
   flutter::PluginRegistrarLinux* registrar_;
   std::shared_ptr<flutter::TextureRegistrar> textures_;
+  std::shared_ptr<video_player_custom::TaskPoster> poster_;
   std::unique_ptr<flutter::MethodChannel<EncodableValue>> channel_;
   std::mutex players_mutex_;
   std::map<int64_t, std::unique_ptr<DesktopPlayerEntry>> players_;
