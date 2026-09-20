@@ -1205,37 +1205,10 @@ class VideoPlayer extends StatefulWidget {
 }
 
 class _VideoPlayerState extends State<VideoPlayer> {
-  late int _playerId;
-  late VideoPlayerValue _lastValue;
-  void _controllerDidUpdateValue() {
-    final int newPlayerId = widget.controller.playerId;
-    final VideoPlayerValue value = widget.controller.value;
-    final bool shouldRebuild = newPlayerId != _playerId ||
-        value.isInitialized != _lastValue.isInitialized ||
-        value.isBuffering != _lastValue.isBuffering ||
-        value.errorDescription != _lastValue.errorDescription ||
-        value.rotationCorrection != _lastValue.rotationCorrection ||
-        (widget.loadingBuilder != null &&
-            (!value.isInitialized || value.isBuffering) &&
-            (value.buffered != _lastValue.buffered ||
-                value.duration != _lastValue.duration));
-    _lastValue = value;
-    if (shouldRebuild) {
-      setState(() {
-        _playerId = newPlayerId;
-      });
-    }
-  }
-
   @override
   void initState() {
     super.initState();
-    _playerId = widget.controller.playerId;
-    _lastValue = widget.controller.value;
     WindowsPipOverlay.register(this, widget.controller, context);
-    // Need to listen for initialization events since the actual widget ID
-    // becomes available after asynchronous initialization finishes.
-    widget.controller.addListener(_controllerDidUpdateValue);
   }
 
   @override
@@ -1244,27 +1217,25 @@ class _VideoPlayerState extends State<VideoPlayer> {
     if (oldWidget.controller != widget.controller) {
       WindowsPipOverlay.unregister(this);
       WindowsPipOverlay.register(this, widget.controller, context);
-      oldWidget.controller.removeListener(_controllerDidUpdateValue);
-      _playerId = widget.controller.playerId;
-      _lastValue = widget.controller.value;
-      widget.controller.addListener(_controllerDidUpdateValue);
     }
   }
 
   @override
   void dispose() {
     WindowsPipOverlay.unregister(this);
-    widget.controller.removeListener(_controllerDidUpdateValue);
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return _buildContent(context);
+    return ValueListenableBuilder<VideoPlayerValue>(
+      valueListenable: widget.controller,
+      builder: (context, value, child) => _buildContent(context, value),
+    );
   }
 
-  Widget _buildContent(BuildContext context) {
-    final VideoPlayerValue value = widget.controller.value;
+  Widget _buildContent(BuildContext context, VideoPlayerValue value) {
+    final int playerId = widget.controller.playerId;
 
     if (value.hasError) {
       final VideoPlayerErrorBuilder? errorBuilder = widget.errorBuilder;
@@ -1276,12 +1247,12 @@ class _VideoPlayerState extends State<VideoPlayer> {
     }
 
     final bool isLoading = !value.isInitialized || value.isBuffering;
-    final Widget video = _playerId == VideoPlayerController.kUninitializedPlayerId
+    final Widget video = playerId == VideoPlayerController.kUninitializedPlayerId
         ? Container()
         : _VideoPlayerWithRotation(
             rotation: value.rotationCorrection,
             child: _videoPlayerPlatform.buildViewWithOptions(
-              platform_interface.VideoViewOptions(playerId: _playerId),
+              platform_interface.VideoViewOptions(playerId: playerId),
             ),
           );
     if (widget.loadingBuilder == null) {
