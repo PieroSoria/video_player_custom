@@ -69,6 +69,11 @@ flutter build windows --release
 
 Apple builds use Swift Package Manager for this plugin and CocoaPods for
 dependencies that have not yet adopted Swift Package Manager.
+The vendored Apple modules use the `video_player_custom_avfoundation` prefix,
+Objective-C symbols use `VPC`, and platform channels have package-specific
+names to avoid collisions with the official `video_player_avfoundation` package.
+Keep these namespaces when updating the vendored code or regenerating Pigeon
+messages, including the matching Dart channel names.
 
 ![The example app running in iOS](https://github.com/flutter/packages/blob/main/packages/video_player/video_player/doc/demo_ipod.gif?raw=true)
 

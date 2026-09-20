@@ -1,5 +1,5 @@
 import Foundation
-import video_player_avfoundation
+import video_player_custom_avfoundation
 #if os(iOS)
 import Flutter
 import UIKit

@@ -126,8 +126,8 @@ class AVFoundationVideoPlayer extends VideoPlayerPlatform {
         _playerApiProvider(playerId),
         viewState,
         eventChannel: EventChannel(
-          // This must match the channel name used in FVPVideoPlayerPlugin.m.
-          'flutter.dev/videoPlayer/videoEvents$playerId',
+          // This must match the channel name used in VPCVideoPlayerPlugin.m.
+          'flutter.dev/videoPlayerCustom/videoEvents$playerId',
         ),
       );
     });
@@ -332,12 +332,12 @@ class AVFoundationVideoPlayer extends VideoPlayerPlatform {
 
     final Widget view = defaultTargetPlatform == TargetPlatform.macOS
         ? AppKitView(
-            viewType: 'plugins.flutter.dev/video_player_ios',
+            viewType: 'plugins.flutter.dev/video_player_custom_ios',
             creationParams: creationParams,
             creationParamsCodec: AVFoundationVideoPlayerApi.pigeonChannelCodec,
           )
         : UiKitView(
-            viewType: 'plugins.flutter.dev/video_player_ios',
+            viewType: 'plugins.flutter.dev/video_player_custom_ios',
             creationParams: creationParams,
             creationParamsCodec: AVFoundationVideoPlayerApi.pigeonChannelCodec,
           );
@@ -423,7 +423,7 @@ class _PlayerInstance {
 
   void _onStreamEvent(dynamic event) {
     final map = event as Map<dynamic, dynamic>;
-    // The strings here must all match the strings in FVPEventBridge.m.
+    // The strings here must all match the strings in VPCEventBridge.m.
     _eventStreamController.add(switch (map['event']) {
       'initialized' => VideoEvent(
         eventType: VideoEventType.initialized,

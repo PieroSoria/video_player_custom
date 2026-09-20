@@ -264,7 +264,7 @@ class AVFoundationVideoPlayerApi {
 
   Future<void> initialize() async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.video_player_avfoundation.AVFoundationVideoPlayerApi.initialize$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.video_player_custom_avfoundation.AVFoundationVideoPlayerApi.initialize$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
@@ -278,7 +278,7 @@ class AVFoundationVideoPlayerApi {
 
   Future<int> createForPlatformView(CreationOptions params) async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.video_player_avfoundation.AVFoundationVideoPlayerApi.createForPlatformView$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.video_player_custom_avfoundation.AVFoundationVideoPlayerApi.createForPlatformView$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
@@ -297,7 +297,7 @@ class AVFoundationVideoPlayerApi {
 
   Future<TexturePlayerIds> createForTextureView(CreationOptions creationOptions) async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.video_player_avfoundation.AVFoundationVideoPlayerApi.createForTextureView$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.video_player_custom_avfoundation.AVFoundationVideoPlayerApi.createForTextureView$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
@@ -316,7 +316,7 @@ class AVFoundationVideoPlayerApi {
 
   Future<void> setMixWithOthers(bool mixWithOthers) async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.video_player_avfoundation.AVFoundationVideoPlayerApi.setMixWithOthers$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.video_player_custom_avfoundation.AVFoundationVideoPlayerApi.setMixWithOthers$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
@@ -330,7 +330,7 @@ class AVFoundationVideoPlayerApi {
 
   Future<String?> getAssetUrl(String asset, String? package) async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.video_player_avfoundation.AVFoundationVideoPlayerApi.getAssetUrl$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.video_player_custom_avfoundation.AVFoundationVideoPlayerApi.getAssetUrl$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,

@@ -405,7 +405,7 @@ class VideoPlayerInstanceApi {
 
   Future<void> setLooping(bool looping) async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.video_player_avfoundation.VideoPlayerInstanceApi.setLooping$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.video_player_custom_avfoundation.VideoPlayerInstanceApi.setLooping$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
@@ -419,7 +419,7 @@ class VideoPlayerInstanceApi {
 
   Future<void> setVolume(double volume) async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.video_player_avfoundation.VideoPlayerInstanceApi.setVolume$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.video_player_custom_avfoundation.VideoPlayerInstanceApi.setVolume$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
@@ -433,7 +433,7 @@ class VideoPlayerInstanceApi {
 
   Future<void> setPlaybackSpeed(double speed) async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.video_player_avfoundation.VideoPlayerInstanceApi.setPlaybackSpeed$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.video_player_custom_avfoundation.VideoPlayerInstanceApi.setPlaybackSpeed$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
@@ -447,7 +447,7 @@ class VideoPlayerInstanceApi {
 
   Future<void> play() async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.video_player_avfoundation.VideoPlayerInstanceApi.play$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.video_player_custom_avfoundation.VideoPlayerInstanceApi.play$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
@@ -461,7 +461,7 @@ class VideoPlayerInstanceApi {
 
   Future<int> getPosition() async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.video_player_avfoundation.VideoPlayerInstanceApi.getPosition$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.video_player_custom_avfoundation.VideoPlayerInstanceApi.getPosition$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
@@ -480,7 +480,7 @@ class VideoPlayerInstanceApi {
 
   Future<void> seekTo(int position) async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.video_player_avfoundation.VideoPlayerInstanceApi.seekTo$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.video_player_custom_avfoundation.VideoPlayerInstanceApi.seekTo$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
@@ -494,7 +494,7 @@ class VideoPlayerInstanceApi {
 
   Future<void> pause() async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.video_player_avfoundation.VideoPlayerInstanceApi.pause$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.video_player_custom_avfoundation.VideoPlayerInstanceApi.pause$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
@@ -508,7 +508,7 @@ class VideoPlayerInstanceApi {
 
   Future<void> dispose() async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.video_player_avfoundation.VideoPlayerInstanceApi.dispose$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.video_player_custom_avfoundation.VideoPlayerInstanceApi.dispose$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
@@ -522,7 +522,7 @@ class VideoPlayerInstanceApi {
 
   Future<List<MediaSelectionAudioTrackData>> getAudioTracks() async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.video_player_avfoundation.VideoPlayerInstanceApi.getAudioTracks$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.video_player_custom_avfoundation.VideoPlayerInstanceApi.getAudioTracks$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
@@ -541,7 +541,7 @@ class VideoPlayerInstanceApi {
 
   Future<void> selectAudioTrack(int trackIndex) async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.video_player_avfoundation.VideoPlayerInstanceApi.selectAudioTrack$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.video_player_custom_avfoundation.VideoPlayerInstanceApi.selectAudioTrack$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
@@ -556,7 +556,7 @@ class VideoPlayerInstanceApi {
   /// Gets the available video tracks for the video.
   Future<NativeVideoTrackData> getVideoTracks() async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.video_player_avfoundation.VideoPlayerInstanceApi.getVideoTracks$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.video_player_custom_avfoundation.VideoPlayerInstanceApi.getVideoTracks$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
@@ -577,7 +577,7 @@ class VideoPlayerInstanceApi {
   /// Pass 0 to enable auto quality selection.
   Future<void> selectVideoTrack(int bitrate) async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.video_player_avfoundation.VideoPlayerInstanceApi.selectVideoTrack$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.video_player_custom_avfoundation.VideoPlayerInstanceApi.selectVideoTrack$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
@@ -593,7 +593,7 @@ class VideoPlayerInstanceApi {
     bool preventsDisplaySleepDuringVideoPlayback,
   ) async {
     final pigeonVar_channelName =
-        'dev.flutter.pigeon.video_player_avfoundation.VideoPlayerInstanceApi.setPreventsDisplaySleepDuringVideoPlayback$pigeonVar_messageChannelSuffix';
+        'dev.flutter.pigeon.video_player_custom_avfoundation.VideoPlayerInstanceApi.setPreventsDisplaySleepDuringVideoPlayback$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
