@@ -844,6 +844,7 @@ void WmfVideoPlayer::PresentFrame(const ComPtr<IMFSample>& sample) {
   const size_t slot = frame_slot_index_;
   if (!ConvertSampleToFrame(sample, slot)) return;
   frame_slot_index_ = (frame_slot_index_ + 1) % kFrameSlots;
+  frame_generation_.store(frame_generation_.load() + 1);
   if (textures_) {
     // The engine must be told from the platform thread, mirroring Emit.
     auto self = shared_from_this();
@@ -930,6 +931,22 @@ void WmfVideoPlayer::DoSeek(int64_t position_ms) {
   last_audio_pts_ms_ = 0;
   position_ms_ = position_ms;
   audio_.ResetClock();
+}
+
+bool WmfVideoPlayer::CopyCurrentFrame(std::vector<uint8_t>* data,
+                                      int64_t* width, int64_t* height,
+                                      int64_t* stride) {
+  std::lock_guard<std::mutex> lock(frame_mutex_);
+  const size_t slot = (frame_slot_index_ - 1 + kFrameSlots) % kFrameSlots;
+  const FrameSlot& frame = frame_slots_[slot];
+  if (frame.data.empty() || frame.width <= 0 || frame.height <= 0) {
+    return false;
+  }
+  *data = frame.data;
+  *width = frame.width;
+  *height = frame.height;
+  *stride = frame_byte_stride_;
+  return true;
 }
 
 std::string WmfVideoPlayer::HResultString(HRESULT hr) {

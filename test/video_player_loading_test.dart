@@ -77,7 +77,7 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(player());
-    expect(find.text('Loading: null'), findsOneWidget);
+    expect(find.text('Loading: 0.0'), findsOneWidget);
     expect(find.byType(Texture), findsNothing);
 
     controller.playerId = 7;
@@ -92,12 +92,12 @@ void main() {
     );
     await tester.pump();
     // Loading remains during the fade, then disappears without replacing video.
-    expect(find.text('Loading: null'), findsOneWidget);
+    expect(find.text('Loading: 0.0'), findsOneWidget);
     await tester.pump(const Duration(milliseconds: 125));
     final fade = tester.widget<FadeTransition>(
       find
           .ancestor(
-            of: find.text('Loading: null'),
+            of: find.text('Loading: 0.0'),
             matching: find.byType(FadeTransition),
           )
           .first,
@@ -105,7 +105,7 @@ void main() {
     expect(fade.opacity.value, greaterThan(0));
     expect(fade.opacity.value, lessThan(1));
     await tester.pumpAndSettle();
-    expect(find.text('Loading: null'), findsNothing);
+    expect(find.text('Loading: 0.0'), findsNothing);
     expect(tester.element(find.byType(Texture)), same(videoElement));
   }, variant: TargetPlatformVariant({TargetPlatform.iOS}));
 
@@ -122,7 +122,7 @@ void main() {
 
     controller.value = controller.value.copyWith(isBuffering: true);
     await tester.pumpAndSettle();
-    expect(find.text('Loading: null'), findsOneWidget);
+    expect(find.text('Loading: 0.0'), findsOneWidget);
 
     controller.value = controller.value.copyWith(
       buffered: [DurationRange(Duration.zero, const Duration(seconds: 5))],
@@ -152,12 +152,12 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 30));
         expect(tester.takeException(), isNull);
-        expect(find.text('Loading: null'), findsOneWidget);
+        expect(find.text('Loading: 0.0'), findsOneWidget);
         expect(tester.element(find.byType(Texture)), same(videoElement));
       }
       controller.value = controller.value.copyWith(isBuffering: false);
       await tester.pumpAndSettle();
-      expect(find.text('Loading: null'), findsNothing);
+      expect(find.text('Loading: 0.0'), findsNothing);
     },
     variant: TargetPlatformVariant({TargetPlatform.iOS}),
   );
@@ -178,12 +178,12 @@ void main() {
       await oldController.dispose();
       await tester.pump(const Duration(milliseconds: 40));
       expect(tester.takeException(), isNull);
-      expect(find.text('Loading: null'), findsOneWidget);
+      expect(find.text('Loading: 0.0'), findsOneWidget);
 
       controller.playerId = 8;
       controller.value = controller.value.copyWith(isInitialized: true);
       await tester.pumpAndSettle();
-      expect(find.text('Loading: null'), findsNothing);
+      expect(find.text('Loading: 0.0'), findsNothing);
       expect(tester.widget<Texture>(find.byType(Texture)).textureId, 8);
     },
     variant: TargetPlatformVariant({TargetPlatform.iOS}),
@@ -195,7 +195,7 @@ void main() {
       await tester.pumpWidget(player());
       controller.value = VideoPlayerValue.erroneous('Cannot open video');
       await tester.pump();
-      expect(find.text('Loading: null'), findsNothing);
+      expect(find.text('Loading: 0.0'), findsNothing);
       expect(find.text('Error: Cannot open video'), findsOneWidget);
     },
     variant: TargetPlatformVariant({TargetPlatform.iOS}),

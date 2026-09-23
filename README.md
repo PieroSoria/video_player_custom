@@ -237,9 +237,7 @@ See `example/lib/basic.dart` for the complete flow.
 VideoPlayer(
   controller,
   loadingBuilder: (context, progress) => Center(
-    child: progress != null
-        ? LinearProgressIndicator(value: progress)
-        : const CircularProgressIndicator(),
+    child: LinearProgressIndicator(value: progress),
   ),
   errorBuilder: (context, error) => Center(
     child: Text(
@@ -251,8 +249,8 @@ VideoPlayer(
 ```
 
 - **`loadingBuilder: (context, progress)`** — shown while the controller is
-  initializing/buffering. `progress` is the buffered fraction (`0.0`–`1.0`), or
-  `null` while the buffered range is not yet measurable.
+  initializing/buffering. `progress` is the buffered fraction (`0.0`–`1.0`),
+  `0.0` while the buffered range is not yet measurable (never `null`).
 - **`errorBuilder: (context, error)`** — shown in place of the video when
   `controller.value.hasError` is true. `error` is `value.errorDescription`, or
   `null` when no description is available.

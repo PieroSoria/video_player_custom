@@ -126,6 +126,19 @@ class WmfVideoPlayer
   int64_t texture_id() const { return texture_id_; }
   bool ready() const { return ready_; }
 
+  /// Copies the most recently decoded frame (top-down BGRA, |stride| bytes per
+  /// row) into |data| for external rendering (e.g. the native PiP window).
+  /// Returns false when no frame has been presented yet. Thread-safe.
+  bool CopyCurrentFrame(std::vector<uint8_t>* data, int64_t* width,
+                        int64_t* height, int64_t* stride);
+
+  /// Monotonic counter incremented on every presented frame; lets consumers
+  /// repaint only when the picture actually changed. Thread-safe.
+  int64_t frame_generation() const { return frame_generation_.load(); }
+
+  /// Whether playback is currently running. Thread-safe.
+  bool IsPlaying() const { return playing_.load(); }
+
  private:
   enum class CommandType { kNone, kPlay, kPause, kSeek, kSetVolume, kDispose };
 
@@ -208,7 +221,7 @@ class WmfVideoPlayer
   bool audio_present_ = false;
 
   // Playback state.
-  bool playing_ = false;
+  std::atomic<bool> playing_ = false;
   bool looping_ = false;
   float speed_ = 1.0f;
   float volume_ = 1.0f;
@@ -221,6 +234,7 @@ class WmfVideoPlayer
 
   std::atomic<int64_t> position_ms_ = 0;
   std::atomic<int64_t> buffered_ms_ = 0;
+  std::atomic<int64_t> frame_generation_ = 0;
 
   // ---- Texture / frame state ----
   static constexpr size_t kFrameSlots = 3;

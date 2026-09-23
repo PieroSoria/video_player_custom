@@ -14,7 +14,6 @@ import 'package:video_player_platform_interface/video_player_platform_interface.
     as platform_interface;
 
 import 'src/closed_caption_file.dart';
-import 'src/pip/windows_pip_overlay.dart';
 
 export 'package:video_player_platform_interface/video_player_platform_interface.dart'
     show
@@ -701,7 +700,6 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
 
   @override
   Future<void> dispose() async {
-    WindowsPipOverlay.controllerDisposed(this);
     if (_isDisposed) {
       return;
     }
@@ -1157,10 +1155,10 @@ class _VideoAppLifeCycleObserver extends Object with WidgetsBindingObserver {
 
 /// Signature for the [VideoPlayer.loadingBuilder] argument.
 ///
-/// [progress] is the buffered fraction of the video (`0.0`–`1.0`), or `null`
-/// while the buffered range is not yet measurable.
+/// [progress] is the buffered fraction of the video (`0.0`–`1.0`); it is `0.0`
+/// while the buffered range is not yet measurable, never `null`.
 typedef VideoPlayerLoadingBuilder =
-    Widget Function(BuildContext context, double? progress);
+    Widget Function(BuildContext context, double progress);
 
 /// Signature for the [VideoPlayer.errorBuilder] argument.
 ///
@@ -1208,21 +1206,15 @@ class _VideoPlayerState extends State<VideoPlayer> {
   @override
   void initState() {
     super.initState();
-    WindowsPipOverlay.register(this, widget.controller, context);
   }
 
   @override
   void didUpdateWidget(VideoPlayer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.controller != widget.controller) {
-      WindowsPipOverlay.unregister(this);
-      WindowsPipOverlay.register(this, widget.controller, context);
-    }
   }
 
   @override
   void dispose() {
-    WindowsPipOverlay.unregister(this);
     super.dispose();
   }
 
@@ -1278,19 +1270,19 @@ class _VideoPlayerState extends State<VideoPlayer> {
     );
   }
 
-  /// Buffered fraction of the video (`0.0`–`1.0`), or `null` while the
-  /// duration is not yet known and no buffered range is measurable.
-  double? _bufferedProgress(VideoPlayerValue value) {
+  /// Buffered fraction of the video (`0.0`–`1.0`); `0.0` while the duration is
+  /// not yet known and no buffered range is measurable.
+  double _bufferedProgress(VideoPlayerValue value) {
     final Duration duration = value.duration;
     if (duration <= Duration.zero || value.buffered.isEmpty) {
-      return null;
+      return 0.0;
     }
     final int bufferedMs = value.buffered.last.end.inMilliseconds;
     final int totalMs = duration.inMilliseconds;
     if (totalMs <= 0) {
-      return null;
+      return 0.0;
     }
-    return (bufferedMs / totalMs).clamp(0.0, 1.0);
+    return (bufferedMs / totalMs).clamp(0.0, 1.0).toDouble();
   }
 }
 
@@ -1303,7 +1295,7 @@ class _VideoLoadingOverlay extends StatefulWidget {
   });
 
   final bool isLoading;
-  final double? progress;
+  final double progress;
   final VideoPlayerLoadingBuilder builder;
 
   @override
