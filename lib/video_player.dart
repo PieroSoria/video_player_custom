@@ -400,6 +400,7 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
        formatHint = null,
        httpHeaders = const <String, String>{},
        cacheKey = null,
+       isLive = false,
        super(
          VideoPlayerValue(
            duration: Duration.zero,
@@ -433,6 +434,7 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
        dataSourceType = platform_interface.DataSourceType.network,
        package = null,
        cacheKey = null,
+       isLive = false,
        super(
          VideoPlayerValue(
            duration: Duration.zero,
@@ -457,6 +459,7 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     this.videoPlayerOptions,
     this.httpHeaders = const <String, String>{},
     this.cacheKey,
+    this.isLive = false,
     this.viewType = platform_interface.VideoViewType.textureView,
   }) : _closedCaptionFileFuture = closedCaptionFile,
        dataSource = url.toString(),
@@ -486,6 +489,7 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
        package = null,
        formatHint = null,
        cacheKey = null,
+       isLive = false,
        super(
          VideoPlayerValue(
            duration: Duration.zero,
@@ -514,6 +518,7 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
        formatHint = null,
        httpHeaders = const <String, String>{},
        cacheKey = null,
+       isLive = false,
        super(
          VideoPlayerValue(
            duration: Duration.zero,
@@ -549,9 +554,22 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
   ///
   /// When set, `initialize()` reuses the cached copy on disk when available
   /// (no network, instant open) and, on a miss, keeps streaming from the
-  /// network while the file is downloaded in the background for next time.
+  /// network while the media is downloaded in the background for next time.
   /// See [VideoPlayerCache.instance] to configure the cache directory.
+  ///
+  /// HLS (`.m3u8`/`.m3u` or `formatHint: VideoFormat.hls`), DASH (`.mpd` or
+  /// `formatHint: VideoFormat.dash`) and Smooth Streaming (`Manifest` or
+  /// `formatHint: VideoFormat.ss`) cache their whole presentation —
+  /// manifests, segments and keys are downloaded and rewritten to local
+  /// files. Live sources stream live and are never cached (see [isLive]).
   final String? cacheKey;
+
+  /// Marks a live network stream.
+  ///
+  /// Live streams are ephemeral by nature, so they are never written to the
+  /// disk cache: [cacheKey] is ignored and playback always streams from the
+  /// network.
+  final bool isLive;
 
   /// The requested display mode for the video.
   ///
@@ -581,14 +599,19 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
   /// Resolves the effective source for a network video.
   ///
   /// With a [cacheKey], a cached copy takes priority (immediate, offline
-  /// playback); on a miss the network is used for playback while the file is
-  /// downloaded in the background for the next open.
+  /// playback); on a miss the network is used for playback while the media is
+  /// downloaded in the background for the next open. HLS, DASH and Smooth
+  /// Streaming presentations are cached whole — playlists/manifests, segments
+  /// and keys are downloaded and rewritten to local files. Live sources
+  /// ([isLive]) always stream from the network and are never written to the
+  /// cache, as are live manifests themselves (dynamic DASH, DVR Smooth
+  /// Streaming), which the downloaders reject.
   Future<platform_interface.DataSource> _networkDataSource(
     String uri, {
     required Map<String, String> httpHeaders,
     String? cacheKey,
   }) async {
-    if (cacheKey == null || kIsWeb) {
+    if (cacheKey == null || kIsWeb || isLive) {
       return platform_interface.DataSource(
         sourceType: platform_interface.DataSourceType.network,
         uri: uri,
@@ -596,8 +619,8 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
         httpHeaders: httpHeaders,
       );
     }
-    final File? cached =
-        await VideoPlayerCache.instance.fileFor(uri, cacheKey: cacheKey);
+    final File? cached = await VideoPlayerCache.instance
+        .fileFor(uri, cacheKey: cacheKey, formatHint: formatHint);
     if (cached != null) {
       return platform_interface.DataSource(
         sourceType: platform_interface.DataSourceType.network,
@@ -605,6 +628,8 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
         formatHint: formatHint,
       );
     }
+    // Playback streams live while the media is downloaded in the background;
+    // the next open uses the local copy.
     unawaited(_prefetchForCache(uri, httpHeaders));
     return platform_interface.DataSource(
       sourceType: platform_interface.DataSourceType.network,
@@ -619,8 +644,12 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     Map<String, String> httpHeaders,
   ) async {
     try {
-      await VideoPlayerCache.instance
-          .prefetch(uri, cacheKey: cacheKey, headers: httpHeaders);
+      await VideoPlayerCache.instance.prefetch(
+        uri,
+        cacheKey: cacheKey,
+        headers: httpHeaders,
+        formatHint: formatHint,
+      );
     } catch (error) {
       debugPrint('VideoPlayerCache: prefetch failed for $uri ($error)');
     }

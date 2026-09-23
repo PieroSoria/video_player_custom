@@ -1,11 +1,31 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:video_player_platform_interface/video_player_platform_interface.dart';
+
+import 'dash_downloader.dart';
+import 'hls_downloader.dart';
+import 'smooth_streaming_downloader.dart';
+
 /// Disk cache for network videos, modelled after `cached_network_image`.
 ///
 /// Assign a persistent [Directory] to [instance] to reuse downloaded files
 /// across launches and play offline. Downloads stream to disk in chunks, so
 /// device memory is not saturated even for large files.
+///
+/// Supported sources:
+///   * Single files (MP4, MKV, WebM, ...) — cached whole.
+///   * HLS (`formatHint: VideoFormat.hls` or `.m3u8`/`.m3u` URLs) — the whole
+///     presentation (playlists, segments and keys) is downloaded and rewritten
+///     to local files, so the cached copy plays back offline.
+///   * DASH (`formatHint: VideoFormat.dash` or `.mpd` URLs) — the manifest and
+///     every segment are downloaded and the manifest is rewritten to local
+///     files.
+///   * Smooth Streaming (`formatHint: VideoFormat.ss` or `Manifest` URLs) —
+///     the manifest and every video/audio fragment are downloaded and the
+///     manifest is rewritten to local files.
+///   * Live manifests (dynamic DASH, DVR/Smooth Streaming) are never cached,
+///     and neither are sources opened with `isLive: true` on the controller.
 ///
 /// Usage from `initialize()` (opt-in, `cacheKey` required):
 /// ```dart
@@ -39,9 +59,25 @@ class VideoPlayerCache {
   /// The cached file for [uri], or `null` when it is not cached yet.
   ///
   /// Uses [cacheKey] as the entry name when provided; otherwise a stable hash
-  /// of [uri]. Touches the file so LRU eviction keeps it longer.
-  Future<File?> fileFor(String uri, {String? cacheKey}) async {
-    final File file = _fileFor(uri, cacheKey);
+  /// of [uri]. Touches the file so LRU eviction keeps it longer. For HLS,
+  /// DASH and Smooth Streaming the returned file is the rewritten local
+  /// master manifest/playlist.
+  Future<File?> fileFor(
+    String uri, {
+    String? cacheKey,
+    VideoFormat? formatHint,
+  }) async {
+    final String key = cacheKey ?? _hash(uri);
+    final String? manifestExt = _manifestExtension(uri, formatHint);
+    if (manifestExt != null) {
+      final File master = _manifestMaster(key, manifestExt);
+      if (!await master.exists()) {
+        return null;
+      }
+      await _touch(master);
+      return master;
+    }
+    final File file = _fileFor(key, uri);
     if (!await file.exists()) {
       return null;
     }
@@ -50,30 +86,44 @@ class VideoPlayerCache {
   }
 
   /// Whether [uri] currently has a cached entry.
-  Future<bool> have(String uri, {String? cacheKey}) async {
-    return await fileFor(uri, cacheKey: cacheKey) != null;
+  Future<bool> have(
+    String uri, {
+    String? cacheKey,
+    VideoFormat? formatHint,
+  }) async {
+    return await fileFor(uri, cacheKey: cacheKey, formatHint: formatHint) !=
+        null;
   }
 
   /// Downloads [uri] into the cache (or waits for an already-running
   /// download of the same entry) without blocking playback.
   ///
-  /// Idempotent: returns immediately when the entry already exists. Failures
-  /// are surfaced to the caller, which usually ignores them (cache misses do
-  /// not prevent streaming).
+  /// Idempotent: returns immediately when the entry already exists. HLS, DASH
+  /// and Smooth Streaming sources download their whole presentation
+  /// (manifests, segments, keys) and rewrite it to local files. Failures are
+  /// surfaced to the caller, which usually ignores them (cache misses do not
+  /// prevent streaming).
   Future<void> prefetch(
     String uri, {
     String? cacheKey,
     Map<String, String>? headers,
+    VideoFormat? formatHint,
   }) {
-    final File target = _fileFor(uri, cacheKey);
-    Future<void>? inFlight = _prefetching[target.path];
+    final String key = cacheKey ?? _hash(uri);
+    final String? manifestExt = _manifestExtension(uri, formatHint);
+    final String hitKey = manifestExt != null
+        ? _manifestMaster(key, manifestExt).path
+        : _fileFor(key, uri).path;
+    Future<void>? inFlight = _prefetching[hitKey];
     if (inFlight == null) {
-      inFlight = _download(uri, target, headers);
-      _prefetching[target.path] = inFlight;
+      inFlight = manifestExt != null
+          ? _downloadManifestEntry(uri, key, headers, manifestExt, formatHint)
+          : _download(uri, _fileFor(key, uri), headers);
+      _prefetching[hitKey] = inFlight;
       inFlight.then<void>((_) {
-        _prefetching.remove(target.path);
+        _prefetching.remove(hitKey);
       }, onError: (Object _) {
-        _prefetching.remove(target.path);
+        _prefetching.remove(hitKey);
       });
     }
     return inFlight;
@@ -85,8 +135,14 @@ class VideoPlayerCache {
     String uri, {
     String? cacheKey,
     Map<String, String>? headers,
+    VideoFormat? formatHint,
   }) {
-    return prefetch(uri, cacheKey: cacheKey, headers: headers);
+    return prefetch(
+      uri,
+      cacheKey: cacheKey,
+      headers: headers,
+      formatHint: formatHint,
+    );
   }
 
   /// Removes every cached entry.
@@ -108,11 +164,7 @@ class VideoPlayerCache {
     }
     int total = 0;
     await for (final FileSystemEntity entry in _cacheDirectory.list()) {
-      if (entry is File) {
-        try {
-          total += await entry.length();
-        } catch (_) {}
-      }
+      total += await _entrySize(entry);
     }
     return total;
   }
@@ -157,19 +209,60 @@ class VideoPlayerCache {
     }
   }
 
+  Future<void> _downloadManifestEntry(
+    String uri,
+    String key,
+    Map<String, String>? headers,
+    String manifestExt,
+    VideoFormat? formatHint,
+  ) async {
+    final File master = _manifestMaster(key, manifestExt);
+    if (await master.exists()) {
+      return;
+    }
+    await _cacheDirectory.create(recursive: true);
+    try {
+      final Directory dir = _manifestDir(key);
+      switch (manifestExt) {
+        case '.m3u8':
+          await HlsDownloader(entryDir: dir, headers: headers).download(uri);
+        case '.mpd':
+          await DashDownloader(entryDir: dir, headers: headers).download(uri);
+        case '.ism':
+          await SmoothStreamingDownloader(entryDir: dir, headers: headers)
+              .download(uri);
+        default:
+          throw FormatException(
+              'VideoPlayerCache: unknown manifest type $manifestExt');
+      }
+      await _touch(master);
+      await _evictIfNeeded();
+    } catch (_) {
+      try {
+        final Directory dir = _manifestDir(key);
+        if (await dir.exists()) {
+          await dir.delete(recursive: true);
+        }
+      } catch (_) {}
+      rethrow;
+    }
+  }
+
   Future<void> _evictIfNeeded() async {
     if (maxCacheSizeBytes < 0 || !await _cacheDirectory.exists()) {
       return;
     }
-    final List<({File file, int size, DateTime modified})> entries =
-        <({File file, int size, DateTime modified})>[];
+    final List<({FileSystemEntity entity, int size, DateTime modified})>
+        entries =
+        <({FileSystemEntity entity, int size, DateTime modified})>[];
     await for (final FileSystemEntity entity in _cacheDirectory.list()) {
-      if (entity is File) {
-        final FileStat stat = entity.statSync();
-        entries.add(
-          (file: entity, size: stat.size, modified: stat.modified),
-        );
-      }
+      entries.add(
+        (
+          entity: entity,
+          size: await _entrySize(entity),
+          modified: await _entryModified(entity),
+        ),
+      );
     }
     entries.sort((a, b) => a.modified.compareTo(b.modified));
     int total = 0;
@@ -182,13 +275,62 @@ class VideoPlayerCache {
       }
       total -= entry.size;
       try {
-        entry.file.deleteSync();
+        _deleteQuietly(entry.entity);
       } catch (_) {}
     }
   }
 
-  File _fileFor(String uri, String? cacheKey) {
-    final String key = cacheKey ?? _hash(uri);
+  Future<int> _entrySize(FileSystemEntity entity) async {
+    if (entity is File) {
+      try {
+        return await entity.length();
+      } catch (_) {
+        return 0;
+      }
+    }
+    if (entity is! Directory) {
+      return 0;
+    }
+    int total = 0;
+    try {
+      await for (final FileSystemEntity child in entity.list(recursive: true)) {
+        if (child is File) {
+          total += await child.length();
+        }
+      }
+    } catch (_) {}
+    return total;
+  }
+
+  Future<DateTime> _entryModified(FileSystemEntity entity) async {
+    DateTime latest = DateTime.fromMillisecondsSinceEpoch(0);
+    try {
+      latest = entity.statSync().modified;
+    } catch (_) {}
+    if (entity is! Directory) {
+      return latest;
+    }
+    try {
+      await for (final FileSystemEntity child in entity.list(recursive: true)) {
+        if (child is File) {
+          final DateTime modified = child.statSync().modified;
+          if (modified.isAfter(latest)) {
+            latest = modified;
+          }
+        }
+      }
+    } catch (_) {}
+    return latest;
+  }
+
+  File _manifestMaster(String key, String manifestExt) =>
+      File('${_manifestDir(key).path}${Platform.pathSeparator}'
+          'master$manifestExt');
+
+  Directory _manifestDir(String key) =>
+      Directory('${_cacheDirectory.path}${Platform.pathSeparator}$key');
+
+  File _fileFor(String key, String uri) {
     final String ext = _extensionOf(Uri.tryParse(uri));
     return File('${_cacheDirectory.path}${Platform.pathSeparator}$key$ext');
   }
@@ -196,6 +338,49 @@ class VideoPlayerCache {
   static Future<void> _touch(File file) async {
     try {
       await file.setLastModified(DateTime.now());
+    } catch (_) {}
+  }
+
+  /// The local master-manifest extension for a manifest-based source, or
+  /// `null` for plain media files. Detection combines the [formatHint] with
+  /// the URL shape.
+  static String? _manifestExtension(String uri, VideoFormat? formatHint) {
+    if (formatHint == VideoFormat.hls || _isHlsUri(uri)) {
+      return '.m3u8';
+    }
+    if (formatHint == VideoFormat.dash || _isDashUri(uri)) {
+      return '.mpd';
+    }
+    if (formatHint == VideoFormat.ss || _isSsUri(uri)) {
+      return '.ism';
+    }
+    return null;
+  }
+
+  static bool _isHlsUri(String uri) {
+    final String lower = uri.toLowerCase();
+    return lower.endsWith('.m3u8') || lower.endsWith('.m3u');
+  }
+
+  static bool _isDashUri(String uri) => uri.toLowerCase().endsWith('.mpd');
+
+  static bool _isSsUri(String uri) {
+    final String lower = uri.toLowerCase();
+    return lower.endsWith('.ism') || lower.endsWith('/manifest') ||
+        lower.contains('.ism/');
+  }
+
+  static Future<void> _deleteQuietly(FileSystemEntity entity) async {
+    try {
+      if (entity is Directory) {
+        if (await entity.exists()) {
+          await entity.delete(recursive: true);
+        }
+      } else if (entity is File) {
+        if (await entity.exists()) {
+          await entity.delete();
+        }
+      }
     } catch (_) {}
   }
 

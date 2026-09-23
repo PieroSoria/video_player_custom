@@ -39,8 +39,145 @@ void main() {
     return server;
   }
 
-  String uri(HttpServer server) =>
-      'http://${server.address.address}:${server.port}/media/clip.mp4';
+  String uri(HttpServer server, {String path = '/media/clip.mp4'}) =>
+      'http://${server.address.address}:${server.port}$path';
+
+  Future<HlsFixture> serveHls() async {
+    final List<int> seg1 = Uint8List.fromList(utf8.encode('segment-one'));
+    final List<int> seg2 = Uint8List.fromList(utf8.encode('segment-two'));
+    final String master = '''#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x720
+/media/variant.m3u8
+''';
+    final String variant = '''#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:10
+#EXT-X-KEY:METHOD=AES-128,URI="/keys/token.key"
+#EXTINF:10.0,
+/media/seg1.ts
+#EXTINF:10.0,
+/media/seg2.ts
+#EXT-X-ENDLIST
+''';
+    final HttpServer server =
+        await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((HttpRequest request) {
+      switch (request.uri.path) {
+        case '/media/master.m3u8':
+          request.response.write(master);
+        case '/media/variant.m3u8':
+          request.response.write(variant);
+        case '/keys/token.key':
+          request.response.write('{"kty":"oct","k":"aGVsbG8ta2V5"}');
+        case '/media/seg1.ts':
+          request.response.add(seg1);
+        case '/media/seg2.ts':
+          request.response.add(seg2);
+        default:
+          request.response.statusCode = HttpStatus.notFound;
+      }
+      request.response.close();
+    }, onError: (_) {});
+    return HlsFixture(
+      server: server,
+      masterUrl: uri(server, path: '/media/master.m3u8'),
+      segments: <List<int>>[seg1, seg2],
+    );
+  }
+
+  Future<DashFixture> serveDash() async {
+    final List<int> init = Uint8List.fromList(utf8.encode('mp4-init'));
+    final List<int> seg1 = Uint8List.fromList(utf8.encode('segment-one'));
+    final List<int> seg2 = Uint8List.fromList(utf8.encode('segment-two'));
+    final String mpd = '''<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static"
+  mediaPresentationDuration="PT6S" minBufferTime="PT1S"
+  profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">
+  <Period>
+    <AdaptationSet mimeType="video/mp4" contentType="video">
+      <Role schemeIdUri="urn:mpeg:dash:role:2011" value="main"/>
+      <Representation id="v1" mimeType="video/mp4" codecs="avc1.64001f"
+        bandwidth="500000" width="1280" height="720">
+        <SegmentTemplate timescale="1" duration="3" startNumber="1"
+          media="/seg/v1_\$Number\$.m4s" initialization="/seg/v1_init.mp4"/>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>''';
+    final HttpServer server =
+        await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((HttpRequest request) {
+      switch (request.uri.path) {
+        case '/media/master.mpd':
+          request.response.write(mpd);
+        case '/seg/v1_1.m4s':
+          request.response.add(seg1);
+        case '/seg/v1_2.m4s':
+          request.response.add(seg2);
+        case '/seg/v1_init.mp4':
+          request.response.add(init);
+        default:
+          request.response.statusCode = HttpStatus.notFound;
+      }
+      request.response.close();
+    }, onError: (_) {});
+    return DashFixture(
+      server: server,
+      masterUrl: uri(server, path: '/media/master.mpd'),
+      segments: <List<int>>[seg1, seg2],
+    );
+  }
+
+  Future<SmoothStreamingFixture> serveSmooth() async {
+    final List<int> video1 =
+        Uint8List.fromList(utf8.encode('video-fragment-1'));
+    final List<int> video2 =
+        Uint8List.fromList(utf8.encode('video-fragment-2'));
+    final List<int> audio1 =
+        Uint8List.fromList(utf8.encode('audio-fragment-1'));
+    final List<int> audio2 =
+        Uint8List.fromList(utf8.encode('audio-fragment-2'));
+    final String manifest = '''<SmoothStreamingMedia MajorVersion="2"
+  MinorVersion="1" Duration="6666666" TimeScale="10000000">
+  <StreamIndex Type="video" Chunks="2" TimeScale="10000000"
+    Url="QualityLevels({bitrate})/Fragments(video={start time})">
+    <QualityLevel Index="0" Bitrate="500000" FourCC="H264" Width="1280" Height="720"/>
+    <c t="0" d="3333333"/>
+    <c t="3333333" d="3333333"/>
+  </StreamIndex>
+  <StreamIndex Type="audio" Chunks="2" TimeScale="10000000"
+    Url="QualityLevels({bitrate})/Fragments(audio={start time})">
+    <QualityLevel Index="0" Bitrate="128000" FourCC="AACL"/>
+    <c t="0" d="3333333"/>
+    <c t="3333333" d="3333333"/>
+  </StreamIndex>
+</SmoothStreamingMedia>''';
+    final HttpServer server =
+        await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((HttpRequest request) {
+      switch (request.uri.path) {
+        case '/Manifest':
+          request.response.write(manifest);
+        case '/QualityLevels(500000)/Fragments(video=0)':
+          request.response.add(video1);
+        case '/QualityLevels(500000)/Fragments(video=3333333)':
+          request.response.add(video2);
+        case '/QualityLevels(128000)/Fragments(audio=0)':
+          request.response.add(audio1);
+        case '/QualityLevels(128000)/Fragments(audio=3333333)':
+          request.response.add(audio2);
+        default:
+          request.response.statusCode = HttpStatus.notFound;
+      }
+      request.response.close();
+    }, onError: (_) {});
+    return SmoothStreamingFixture(
+      server: server,
+      masterUrl: uri(server, path: '/Manifest'),
+      videoFragments: <List<int>>[video1, video2],
+      audioFragments: <List<int>>[audio1, audio2],
+    );
+  }
 
   test('prefetch downloads to disk and reuses the entry', () async {
     final body = Uint8List.fromList(utf8.encode('fake-mp4-bytes'));
@@ -197,6 +334,329 @@ void main() {
     expect(await cache.have(url, cacheKey: 'cold'), isTrue);
     await controller.dispose();
   });
+
+  test('live sources stream from the network and never write to the cache',
+      () async {
+    final server = await serve(List<int>.filled(64, 1));
+    addTearDown(server.close);
+    final url = uri(server);
+
+    final controller = VideoPlayerController.networkUrl(
+      Uri.parse(url),
+      cacheKey: 'live',
+      isLive: true,
+      videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
+    );
+    await controller.initialize();
+    // Playback used the network URL itself.
+    expect(fakePlatform.dataSources.last.uri, url);
+    // Give a (suppressed) background prefetch time to run, then assert that
+    // nothing was written to the cache.
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    expect(await cache.have(url, cacheKey: 'live'), isFalse);
+    await controller.dispose();
+  });
+
+  test('HLS prefetch downloads playlists, segments and keys locally',
+      () async {
+    final HlsFixture fixture = await serveHls();
+    addTearDown(fixture.server.close);
+
+    expect(
+      await cache.have(
+        fixture.masterUrl,
+        cacheKey: 'show',
+        formatHint: VideoFormat.hls,
+      ),
+      isFalse,
+    );
+    await cache.prefetch(
+      fixture.masterUrl,
+      cacheKey: 'show',
+      formatHint: VideoFormat.hls,
+    );
+
+    final File? master = await cache.fileFor(
+      fixture.masterUrl,
+      cacheKey: 'show',
+      formatHint: VideoFormat.hls,
+    );
+    expect(master, isNotNull);
+    final String localMaster = await master!.readAsString();
+    expect(localMaster, isNot(contains(fixture.server.address.address)),
+        reason: 'rewritten master points to local files');
+    expect(localMaster, isNot(contains('/media/')));
+
+    // The variant playlist and both segments were downloaded onto disk.
+    final Directory entry = Directory('${tempDir.path}/show');
+    expect(await entry.exists(), isTrue);
+    final List<String> names = await entry
+        .list()
+        .map((FileSystemEntity e) => e.uri.pathSegments.last)
+        .toList();
+    expect(names, contains('master.m3u8'));
+    expect(names, anyElement(endsWith('.ts')));
+    expect(names, anyElement(endsWith('.m3u8')));
+    final File segment = entry
+        .listSync()
+        .firstWhere((FileSystemEntity e) => e.path.endsWith('.ts')) as File;
+    expect(await segment.readAsBytes(), fixture.segments.first);
+  });
+
+  test('initialize() plays a cached HLS presentation from local files',
+      () async {
+    final HlsFixture fixture = await serveHls();
+    addTearDown(fixture.server.close);
+
+    // First open: streaming + background download.
+    final controller = VideoPlayerController.networkUrl(
+      Uri.parse(fixture.masterUrl),
+      cacheKey: 'show',
+      formatHint: VideoFormat.hls,
+      videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
+    );
+    await controller.initialize();
+    expect(fakePlatform.dataSources.last.uri, fixture.masterUrl);
+    expect(fakePlatform.dataSources.last.formatHint, VideoFormat.hls);
+    await cache.warm(
+      fixture.masterUrl,
+      cacheKey: 'show',
+      formatHint: VideoFormat.hls,
+    );
+    expect(
+      await cache.have(
+        fixture.masterUrl,
+        cacheKey: 'show',
+        formatHint: VideoFormat.hls,
+      ),
+      isTrue,
+    );
+    await controller.dispose();
+
+    // Second open: the local rewritten master is used, not the network.
+    final controller2 = VideoPlayerController.networkUrl(
+      Uri.parse(fixture.masterUrl),
+      cacheKey: 'show',
+      formatHint: VideoFormat.hls,
+      videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
+    );
+    await controller2.initialize();
+    final DataSource sent = fakePlatform.dataSources.last;
+    expect(sent.uri, startsWith('file:'), reason: 'cached local HLS used');
+    expect(sent.uri, endsWith('/show/master.m3u8'));
+    expect(sent.httpHeaders, isEmpty);
+    await controller2.dispose();
+  });
+
+  test('DASH prefetch downloads segments and rewrites the manifest to'
+      ' local files', () async {
+    final DashFixture fixture = await serveDash();
+    addTearDown(fixture.server.close);
+
+    expect(
+      await cache.have(
+        fixture.masterUrl,
+        cacheKey: 'film',
+        formatHint: VideoFormat.dash,
+      ),
+      isFalse,
+    );
+    await cache.prefetch(
+      fixture.masterUrl,
+      cacheKey: 'film',
+      formatHint: VideoFormat.dash,
+    );
+
+    final File? master = await cache.fileFor(
+      fixture.masterUrl,
+      cacheKey: 'film',
+      formatHint: VideoFormat.dash,
+    );
+    expect(master, isNotNull);
+    final String localManifest = await master!.readAsString();
+    expect(localManifest, isNot(contains('/seg/')),
+        reason: 'rewritten manifest points at local files');
+    expect(localManifest, contains('<SegmentURL media="e'));
+
+    final Directory entry = Directory('${tempDir.path}/film');
+    final List<String> names = await entry
+        .list()
+        .map((FileSystemEntity e) => e.uri.pathSegments.last)
+        .toList();
+    expect(names, contains('master.mpd'));
+    expect(names.where((String n) => n.endsWith('.m4s')), hasLength(2));
+    expect(names.where((String n) => n.startsWith('init')), hasLength(1));
+    final File segment =
+        entry.listSync().firstWhere((FileSystemEntity e) => e.path.endsWith('.m4s'))
+            as File;
+    expect(await segment.readAsBytes(), fixture.segments.first);
+  });
+
+  test('initialize() plays a cached DASH presentation from local files',
+      () async {
+    final DashFixture fixture = await serveDash();
+    addTearDown(fixture.server.close);
+
+    final controller = VideoPlayerController.networkUrl(
+      Uri.parse(fixture.masterUrl),
+      cacheKey: 'film',
+      formatHint: VideoFormat.dash,
+      videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
+    );
+    await controller.initialize();
+    expect(fakePlatform.dataSources.last.uri, fixture.masterUrl);
+    await cache.warm(fixture.masterUrl,
+        cacheKey: 'film', formatHint: VideoFormat.dash);
+    await controller.dispose();
+
+    final controller2 = VideoPlayerController.networkUrl(
+      Uri.parse(fixture.masterUrl),
+      cacheKey: 'film',
+      formatHint: VideoFormat.dash,
+      videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
+    );
+    await controller2.initialize();
+    final DataSource sent = fakePlatform.dataSources.last;
+    expect(sent.uri, startsWith('file:'), reason: 'cached local DASH used');
+    expect(sent.uri, endsWith('/film/master.mpd'));
+    expect(sent.httpHeaders, isEmpty);
+    await controller2.dispose();
+  });
+
+  test('Smooth Streaming prefetch downloads fragments and rewrites the'
+      ' manifest to local files', () async {
+    final SmoothStreamingFixture fixture = await serveSmooth();
+    addTearDown(fixture.server.close);
+
+    await cache.prefetch(
+      fixture.masterUrl,
+      cacheKey: 'smooth',
+      formatHint: VideoFormat.ss,
+    );
+
+    final File? master = await cache.fileFor(
+      fixture.masterUrl,
+      cacheKey: 'smooth',
+      formatHint: VideoFormat.ss,
+    );
+    expect(master, isNotNull);
+    final String localManifest = await master!.readAsString();
+    expect(localManifest, isNot(contains('QualityLevels(')),
+        reason: 'template rewritten to local names');
+    expect(localManifest, contains('Url="v{bitrate}_{start time}.ismv"'));
+    expect(localManifest, contains('Url="a{bitrate}_{start time}.isma"'));
+
+    final Directory entry = Directory('${tempDir.path}/smooth');
+    final List<String> names = await entry
+        .list()
+        .map((FileSystemEntity e) => e.uri.pathSegments.last)
+        .toList();
+    expect(names, contains('master.ism'));
+    expect(names, contains('v500000_0.ismv'));
+    expect(names, contains('v500000_3333333.ismv'));
+    expect(names, contains('a128000_0.isma'));
+    expect(names, contains('a128000_3333333.isma'));
+    final File fragment = entry
+        .listSync()
+        .firstWhere((FileSystemEntity e) => e.path == '${entry.path}${Platform.pathSeparator}v500000_0.ismv')
+        as File;
+    expect(await fragment.readAsBytes(), fixture.videoFragments.first);
+  });
+
+  test('initialize() plays a cached Smooth Streaming presentation from'
+      ' local files', () async {
+    final SmoothStreamingFixture fixture = await serveSmooth();
+    addTearDown(fixture.server.close);
+
+    final controller = VideoPlayerController.networkUrl(
+      Uri.parse(fixture.masterUrl),
+      cacheKey: 'smooth',
+      formatHint: VideoFormat.ss,
+      videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
+    );
+    await controller.initialize();
+    expect(fakePlatform.dataSources.last.uri, fixture.masterUrl);
+    await cache.warm(fixture.masterUrl,
+        cacheKey: 'smooth', formatHint: VideoFormat.ss);
+    await controller.dispose();
+
+    final controller2 = VideoPlayerController.networkUrl(
+      Uri.parse(fixture.masterUrl),
+      cacheKey: 'smooth',
+      formatHint: VideoFormat.ss,
+      videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
+    );
+    await controller2.initialize();
+    final DataSource sent = fakePlatform.dataSources.last;
+    expect(sent.uri, startsWith('file:'), reason: 'cached local SS used');
+    expect(sent.uri, endsWith('/smooth/master.ism'));
+    expect(sent.httpHeaders, isEmpty);
+    await controller2.dispose();
+  });
+
+  test('live DASH and Smooth Streaming manifests are never cached', () async {
+    final List<(List<int>, VideoFormat)> cases = <(List<int>, VideoFormat)>[
+      (
+        Uint8List.fromList(utf8.encode(
+            '<MPD type="dynamic"><Period/></MPD>')),
+        VideoFormat.dash,
+      ),
+      (
+        Uint8List.fromList(utf8.encode(
+            '<SmoothStreamingMedia IsLive="true"><StreamIndex Type="video"><c t="0" d="1"/></StreamIndex></SmoothStreamingMedia>')),
+        VideoFormat.ss,
+      ),
+    ];
+    for (final (List<int> body, VideoFormat format) in cases) {
+      final HttpServer server = await serve(body);
+      addTearDown(server.close);
+      final String url = uri(server);
+      await expectLater(
+        cache.prefetch(url, cacheKey: 'live', formatHint: format),
+        throwsA(isA<FormatException>()),
+      );
+      expect(await cache.have(url, cacheKey: 'live', formatHint: format),
+          isFalse);
+    }
+  });
+}
+
+class HlsFixture {
+  HlsFixture({
+    required this.server,
+    required this.masterUrl,
+    required this.segments,
+  });
+
+  final HttpServer server;
+  final String masterUrl;
+  final List<List<int>> segments;
+}
+
+class DashFixture {
+  DashFixture({
+    required this.server,
+    required this.masterUrl,
+    required this.segments,
+  });
+
+  final HttpServer server;
+  final String masterUrl;
+  final List<List<int>> segments;
+}
+
+class SmoothStreamingFixture {
+  SmoothStreamingFixture({
+    required this.server,
+    required this.masterUrl,
+    required this.videoFragments,
+    required this.audioFragments,
+  });
+
+  final HttpServer server;
+  final String masterUrl;
+  final List<List<int>> videoFragments;
+  final List<List<int>> audioFragments;
 }
 
 class _RecordingPlatform extends VideoPlayerPlatform {

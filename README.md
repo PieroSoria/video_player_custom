@@ -287,6 +287,19 @@ final controller = VideoPlayerController.networkUrl(
 - On a **cache miss**, it streams from the network as usual while the file is
   downloaded in the background for the next time. Downloads are streamed to
   disk in chunks, so device memory is not saturated even for large files.
+- **HLS** (`.m3u8`/`.m3u`, or `formatHint: VideoFormat.hls`) is cached whole:
+  playlists, segments and AES-128 keys are downloaded and their references
+  rewritten to local files, so the next open plays the `file://` master
+  playlist without network.
+- **DASH** (`.mpd`, or `formatHint: VideoFormat.dash`) and **Smooth
+  Streaming** (`Manifest`, or `formatHint: VideoFormat.ss`) are cached whole
+  too: the manifest is parsed, every segment/fragment is downloaded and the
+  manifest is rewritten to point at local files (the quality ladder is kept).
+- **Live**: pass `isLive: true` and the source is never written to the cache
+  (a manifest snapshot goes stale in seconds). Live manifests themselves
+  (dynamic DASH, DVR/Smooth Streaming) are also rejected by the downloaders
+  and keep streaming live.
+- **Web (`kIsWeb`)** never caches: the disk cache is desktop/mobile only.
 
 Point `VideoPlayerCache.instance` to a persistent directory to keep files
 across launches, and tune the LRU budget:

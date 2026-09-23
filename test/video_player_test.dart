@@ -39,6 +39,9 @@ class FakeController extends ValueNotifier<VideoPlayerValue> implements VideoPla
   String? get cacheKey => null;
 
   @override
+  bool get isLive => false;
+
+  @override
   Map<String, String> get httpHeaders => <String, String>{};
 
   @override
