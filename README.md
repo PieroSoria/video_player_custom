@@ -270,6 +270,52 @@ To learn about playback speed limitations, see the [`setPlaybackSpeed` method do
 
 Furthermore, see the example app for an example playback speed implementation.
 
+### Disk cache for network videos
+
+When you pass a `cacheKey` to `VideoPlayerController.networkUrl`, the plugin
+keeps the downloaded file on disk so later openings are instant and work
+offline:
+
+```dart
+final controller = VideoPlayerController.networkUrl(
+  Uri.parse('https://example.com/video.mp4'),
+  cacheKey: 'weekly-highlights',
+);
+```
+
+- On a **cache hit**, `initialize()` plays the local file directly (no network).
+- On a **cache miss**, it streams from the network as usual while the file is
+  downloaded in the background for the next time. Downloads are streamed to
+  disk in chunks, so device memory is not saturated even for large files.
+
+Point `VideoPlayerCache.instance` to a persistent directory to keep files
+across launches, and tune the LRU budget:
+
+```dart
+import 'dart:io';
+import 'package:video_player_custom/video_player_custom.dart';
+import 'package:path_provider/path_provider.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final dir = await getApplicationSupportDirectory();
+  VideoPlayerCache.instance = VideoPlayerCache(
+    Directory('${dir.path}/videocache'),
+    maxCacheSizeBytes: 1 << 30, // 1 GiB, oldest entries evicted first
+  );
+  runApp(const MyApp());
+}
+```
+
+Use the utility API for pre-warming, queries and cleanup:
+
+```dart
+await VideoPlayerCache.instance.warm(uri, cacheKey: 'key'); // background download
+final file = await VideoPlayerCache.instance.fileFor(uri, cacheKey: 'key');
+final cached = await VideoPlayerCache.instance.have(uri, cacheKey: 'key');
+await VideoPlayerCache.instance.clear(); // drop every cached entry
+```
+
 ### Video view type
 
 You can set the video view type of your controller (instance of `VideoPlayerController`) during its creation by passing the `videoViewType` argument.  

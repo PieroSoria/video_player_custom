@@ -1,5 +1,6 @@
 // A single, autonomous plugin that merges the official `video_player` (from
-// flutter/packages) with full Picture-in-Picture (PiP) support.
+// flutter/packages) with full Picture-in-Picture (PiP) support and a disk cache
+// for network videos.
 //
 // Import this single library (and nothing else) to get everything:
 //
@@ -7,6 +8,8 @@
 //     [VideoProgressIndicator], [VideoScrubber], [VideoViewType], ...
 //   - The PiP API: [VideoPlayerPip], [PipModeChanged], plus the
 //     [VideoPlayerControllerExtension] helpers (e.g. `controller.enterPipMode()`).
+//   - The disk cache: [VideoPlayerCache] (e.g. `controller.networkUrl(uri,
+//     cacheKey: 'key')` for instant, offline re-opens of network videos).
 //
 // ```dart
 // import 'package:video_player_custom/video_player_custom.dart';
@@ -28,6 +31,7 @@ import 'src/platform_impl/avfoundation/avfoundation_video_player.dart';
 
 // The PiP library re-exports the full, PiP-enabled `video_player` API.
 export 'src/pip/video_player_custom_pip.dart';
+export 'src/cache/video_player_cache.dart';
 
 /// Dart entry point used by Flutter's generated plugin registrant.
 class VideoPlayerCustom {

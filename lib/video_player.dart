@@ -14,6 +14,7 @@ import 'package:video_player_platform_interface/video_player_platform_interface.
     as platform_interface;
 
 import 'src/closed_caption_file.dart';
+import 'src/cache/video_player_cache.dart';
 
 export 'package:video_player_platform_interface/video_player_platform_interface.dart'
     show
@@ -398,6 +399,7 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
        dataSourceType = platform_interface.DataSourceType.asset,
        formatHint = null,
        httpHeaders = const <String, String>{},
+       cacheKey = null,
        super(
          VideoPlayerValue(
            duration: Duration.zero,
@@ -430,6 +432,7 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
   }) : _closedCaptionFileFuture = closedCaptionFile,
        dataSourceType = platform_interface.DataSourceType.network,
        package = null,
+       cacheKey = null,
        super(
          VideoPlayerValue(
            duration: Duration.zero,
@@ -453,6 +456,7 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     Future<ClosedCaptionFile>? closedCaptionFile,
     this.videoPlayerOptions,
     this.httpHeaders = const <String, String>{},
+    this.cacheKey,
     this.viewType = platform_interface.VideoViewType.textureView,
   }) : _closedCaptionFileFuture = closedCaptionFile,
        dataSource = url.toString(),
@@ -481,6 +485,7 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
        dataSourceType = platform_interface.DataSourceType.file,
        package = null,
        formatHint = null,
+       cacheKey = null,
        super(
          VideoPlayerValue(
            duration: Duration.zero,
@@ -508,6 +513,7 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
        package = null,
        formatHint = null,
        httpHeaders = const <String, String>{},
+       cacheKey = null,
        super(
          VideoPlayerValue(
            duration: Duration.zero,
@@ -539,6 +545,14 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
   /// Only set for [asset] videos. The package that the asset was loaded from.
   final String? package;
 
+  /// Optional disk-cache entry for network videos (`networkUrl`).
+  ///
+  /// When set, `initialize()` reuses the cached copy on disk when available
+  /// (no network, instant open) and, on a miss, keeps streaming from the
+  /// network while the file is downloaded in the background for next time.
+  /// See [VideoPlayerCache.instance] to configure the cache directory.
+  final String? cacheKey;
+
   /// The requested display mode for the video.
   ///
   /// Platforms that do not support the request view type will ignore this.
@@ -564,6 +578,54 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
   @visibleForTesting
   int get playerId => _playerId;
 
+  /// Resolves the effective source for a network video.
+  ///
+  /// With a [cacheKey], a cached copy takes priority (immediate, offline
+  /// playback); on a miss the network is used for playback while the file is
+  /// downloaded in the background for the next open.
+  Future<platform_interface.DataSource> _networkDataSource(
+    String uri, {
+    required Map<String, String> httpHeaders,
+    String? cacheKey,
+  }) async {
+    if (cacheKey == null || kIsWeb) {
+      return platform_interface.DataSource(
+        sourceType: platform_interface.DataSourceType.network,
+        uri: uri,
+        formatHint: formatHint,
+        httpHeaders: httpHeaders,
+      );
+    }
+    final File? cached =
+        await VideoPlayerCache.instance.fileFor(uri, cacheKey: cacheKey);
+    if (cached != null) {
+      return platform_interface.DataSource(
+        sourceType: platform_interface.DataSourceType.network,
+        uri: cached.uri.toString(),
+        formatHint: formatHint,
+      );
+    }
+    unawaited(_prefetchForCache(uri, httpHeaders));
+    return platform_interface.DataSource(
+      sourceType: platform_interface.DataSourceType.network,
+      uri: uri,
+      formatHint: formatHint,
+      httpHeaders: httpHeaders,
+    );
+  }
+
+  Future<void> _prefetchForCache(
+    String uri,
+    Map<String, String> httpHeaders,
+  ) async {
+    try {
+      await VideoPlayerCache.instance
+          .prefetch(uri, cacheKey: cacheKey, headers: httpHeaders);
+    } catch (error) {
+      debugPrint('VideoPlayerCache: prefetch failed for $uri ($error)');
+    }
+  }
+
   /// Attempts to open the given [dataSource] and load metadata about the video.
   Future<void> initialize() async {
     final bool allowBackgroundPlayback = videoPlayerOptions?.allowBackgroundPlayback ?? false;
@@ -582,11 +644,10 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
           package: package,
         );
       case platform_interface.DataSourceType.network:
-        dataSourceDescription = platform_interface.DataSource(
-          sourceType: platform_interface.DataSourceType.network,
-          uri: dataSource,
-          formatHint: formatHint,
+        dataSourceDescription = await _networkDataSource(
+          dataSource,
           httpHeaders: httpHeaders,
+          cacheKey: cacheKey,
         );
       case platform_interface.DataSourceType.file:
         dataSourceDescription = platform_interface.DataSource(

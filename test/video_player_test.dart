@@ -32,8 +32,11 @@ class FakeController extends ValueNotifier<VideoPlayerValue> implements VideoPla
   @override
   int playerId = VideoPlayerController.kUninitializedPlayerId;
 
-  @override
+@override
   String get dataSource => '';
+
+  @override
+  String? get cacheKey => null;
 
   @override
   Map<String, String> get httpHeaders => <String, String>{};

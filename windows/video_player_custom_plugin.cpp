@@ -482,7 +482,7 @@ class VideoPlayerCustomPlugin : public flutter::Plugin {
 
   void NotifyEntered(bool entered) {
     channel_->InvokeMethod(
-        "pipChanged",
+        "pipModeChanged",
         std::make_unique<EncodableValue>(EncodableMap{
             {EncodableValue("isInPipMode"), EncodableValue(entered)}}));
   }
