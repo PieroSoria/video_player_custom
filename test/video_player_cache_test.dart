@@ -448,6 +448,80 @@ void main() {
     await controller2.dispose();
   });
 
+  test('cached HLS manifest is served over the loopback HTTP server',
+      () async {
+    final HlsFixture fixture = await serveHls();
+    addTearDown(fixture.server.close);
+    await cache.prefetch(
+      fixture.masterUrl,
+      cacheKey: 'show',
+      formatHint: VideoFormat.hls,
+    );
+
+    final Uri? served = await cache.serveManifestHttp(
+      fixture.masterUrl,
+      cacheKey: 'show',
+      formatHint: VideoFormat.hls,
+    );
+    expect(served, isNotNull);
+    expect(served!.host, '127.0.0.1');
+    expect(served.path, endsWith('/show/master.m3u8'));
+
+    final File? masterFile = await cache.fileFor(
+      fixture.masterUrl,
+      cacheKey: 'show',
+      formatHint: VideoFormat.hls,
+    );
+    final String localMaster = await masterFile!.readAsString();
+
+    final HttpClient client = HttpClient();
+    addTearDown(client.close);
+
+    // The master playlist is served with the Apple mpegurl content type and
+    // identical bytes to the cached file.
+    final HttpClientResponse masterResponse =
+        await (await client.getUrl(served)).close();
+    expect(masterResponse.statusCode, HttpStatus.ok);
+    expect(
+        masterResponse.headers.contentType?.mimeType,
+        'application/vnd.apple.mpegurl');
+    expect(await masterResponse.transform(utf8.decoder).join(), localMaster);
+
+    // The referenced variant playlist resolves through the server too.
+    final String variantName = localMaster
+        .split('\n')
+        .firstWhere((String l) => l.isNotEmpty && !l.startsWith('#'));
+    final String servedVariant =
+        await (await client.getUrl(served.resolve(variantName))).close().then(
+              (HttpClientResponse r) async =>
+                  await r.transform(utf8.decoder).join(),
+            );
+    expect(servedVariant, startsWith('#EXTM3U'));
+    expect(servedVariant, isNot(contains('/media/')));
+
+    // A TS segment is served with the exact bytes of the downloaded file.
+    final String segmentName = servedVariant
+        .split('\n')
+        .firstWhere((String l) =>
+            l.isNotEmpty && !l.startsWith('#') && l.endsWith('.ts'));
+    final List<int> segmentBytes =
+        await (await client.getUrl(served.resolve(variantName).resolve(segmentName)))
+            .close()
+            .then((HttpClientResponse r) async => await r.fold<List<int>>(
+                <int>[], (List<int> a, List<int> b) => a..addAll(b)));
+    expect(segmentBytes, fixture.segments.first);
+
+    // Partial requests return 206 with the requested slice.
+    final HttpClientRequest rangeRequest = await client.getUrl(served);
+    rangeRequest.headers.set(HttpHeaders.rangeHeader, 'bytes=0-9');
+    final HttpClientResponse rangeResponse = await rangeRequest.close();
+    expect(rangeResponse.statusCode, HttpStatus.partialContent);
+    expect(
+      await rangeResponse.transform(utf8.decoder).join(),
+      localMaster.substring(0, 10),
+    );
+  });
+
   test('DASH prefetch downloads segments and rewrites the manifest to'
       ' local files', () async {
     final DashFixture fixture = await serveDash();

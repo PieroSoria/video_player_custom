@@ -295,6 +295,13 @@ final controller = VideoPlayerController.networkUrl(
   Streaming** (`Manifest`, or `formatHint: VideoFormat.ss`) are cached whole
   too: the manifest is parsed, every segment/fragment is downloaded and the
   manifest is rewritten to point at local files (the quality ladder is kept).
+- **iOS/macOS**: AVFoundation cannot play manifest playlists (`.m3u8`/`.mpd`)
+  from a `file://` path, so on those platforms the cached presentation is
+  served to the player over an in-process loopback HTTP server
+  (`http://127.0.0.1:<port>/...`) — offline playback works the same. Single
+  files (MP4, MKV, ...) play directly from disk everywhere. If the backend
+  blocks cleartext HTTP, add `NSAllowsLocalNetworking` under
+  `NSAppTransportSecurity` in `Info.plist`.
 - **Live**: pass `isLive: true` and the source is never written to the cache
   (a manifest snapshot goes stale in seconds). Live manifests themselves
   (dynamic DASH, DVR/Smooth Streaming) are also rejected by the downloaders

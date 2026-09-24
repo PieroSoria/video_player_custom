@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:video_player_platform_interface/video_player_platform_interface.dart';
 
+import 'cache_http_server.dart';
 import 'dash_downloader.dart';
 import 'hls_downloader.dart';
 import 'smooth_streaming_downloader.dart';
@@ -26,6 +27,12 @@ import 'smooth_streaming_downloader.dart';
 ///     manifest is rewritten to local files.
 ///   * Live manifests (dynamic DASH, DVR/Smooth Streaming) are never cached,
 ///     and neither are sources opened with `isLive: true` on the controller.
+///
+/// Note: manifest playback from the cached local files requires a player that
+/// accepts `file://` HLS/DASH presentations (e.g. ExoPlayer on Android). On
+/// iOS/macOS AVFoundation does not, so `VideoPlayerController` serves the
+/// cached manifest over this cache's loopback HTTP server there (see
+/// [serveManifestHttp]).
 ///
 /// Usage from `initialize()` (opt-in, `cacheKey` required):
 /// ```dart
@@ -55,6 +62,7 @@ class VideoPlayerCache {
   final int maxCacheSizeBytes;
 
   final Map<String, Future<void>> _prefetching = <String, Future<void>>{};
+  CacheHttpServer? _httpServer;
 
   /// The cached file for [uri], or `null` when it is not cached yet.
   ///
@@ -68,7 +76,7 @@ class VideoPlayerCache {
     VideoFormat? formatHint,
   }) async {
     final String key = cacheKey ?? _hash(uri);
-    final String? manifestExt = _manifestExtension(uri, formatHint);
+    final String? manifestExt = manifestExtension(uri, formatHint);
     if (manifestExt != null) {
       final File master = _manifestMaster(key, manifestExt);
       if (!await master.exists()) {
@@ -95,6 +103,32 @@ class VideoPlayerCache {
         null;
   }
 
+  /// HTTP URL over the cache's loopback server for [uri]'s cached manifest
+  /// entry, or `null` when the entry is not cached or [uri] is not a
+  /// manifest source.
+  ///
+  /// AVFoundation only plays HLS/DASH manifests delivered over HTTP (never
+  /// from a `file://` path), so iOS/macOS play the cached presentation
+  /// through this URL while it keeps streaming from disk.
+  Future<Uri?> serveManifestHttp(
+    String uri, {
+    String? cacheKey,
+    VideoFormat? formatHint,
+  }) async {
+    final String? ext = manifestExtension(uri, formatHint);
+    if (ext == null) {
+      return null;
+    }
+    final String key = cacheKey ?? _hash(uri);
+    final File master = _manifestMaster(key, ext);
+    if (!await master.exists()) {
+      return null;
+    }
+    await _touch(master);
+    _httpServer ??= CacheHttpServer(_cacheDirectory);
+    return _httpServer!.urlFor(key, 'master$ext');
+  }
+
   /// Downloads [uri] into the cache (or waits for an already-running
   /// download of the same entry) without blocking playback.
   ///
@@ -110,7 +144,7 @@ class VideoPlayerCache {
     VideoFormat? formatHint,
   }) {
     final String key = cacheKey ?? _hash(uri);
-    final String? manifestExt = _manifestExtension(uri, formatHint);
+    final String? manifestExt = manifestExtension(uri, formatHint);
     final String hitKey = manifestExt != null
         ? _manifestMaster(key, manifestExt).path
         : _fileFor(key, uri).path;
@@ -344,7 +378,7 @@ class VideoPlayerCache {
   /// The local master-manifest extension for a manifest-based source, or
   /// `null` for plain media files. Detection combines the [formatHint] with
   /// the URL shape.
-  static String? _manifestExtension(String uri, VideoFormat? formatHint) {
+  static String? manifestExtension(String uri, VideoFormat? formatHint) {
     if (formatHint == VideoFormat.hls || _isHlsUri(uri)) {
       return '.m3u8';
     }

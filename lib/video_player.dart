@@ -562,6 +562,10 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
   /// `formatHint: VideoFormat.ss`) cache their whole presentation —
   /// manifests, segments and keys are downloaded and rewritten to local
   /// files. Live sources stream live and are never cached (see [isLive]).
+  ///
+  /// Note: on iOS and macOS, cached manifests are played through an in-process
+  /// loopback HTTP server, because AVFoundation cannot play manifest
+  /// playlists from a `file://` path.
   final String? cacheKey;
 
   /// Marks a live network stream.
@@ -606,6 +610,10 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
   /// ([isLive]) always stream from the network and are never written to the
   /// cache, as are live manifests themselves (dynamic DASH, DVR Smooth
   /// Streaming), which the downloaders reject.
+  ///
+  /// On iOS and macOS (AVFoundation) the cached manifest is served to the
+  /// player over an in-process loopback HTTP server (`127.0.0.1`), because
+  /// AVFoundation does not play `.m3u8`/`.mpd` from `file://` paths.
   Future<platform_interface.DataSource> _networkDataSource(
     String uri, {
     required Map<String, String> httpHeaders,
@@ -622,6 +630,29 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     final File? cached = await VideoPlayerCache.instance
         .fileFor(uri, cacheKey: cacheKey, formatHint: formatHint);
     if (cached != null) {
+      if (_manifestRequiresHttp(uri)) {
+        // AVFoundation refuses file:// manifests; serve the cached copy over
+        // the loopback HTTP server instead. If the server is unavailable,
+        // stream from the network rather than handing AVFoundation a file://
+        // playlist that would never load.
+        final Uri? overHttp = await VideoPlayerCache.instance.serveManifestHttp(
+          uri,
+          cacheKey: cacheKey,
+        );
+        if (overHttp != null) {
+          return platform_interface.DataSource(
+            sourceType: platform_interface.DataSourceType.network,
+            uri: overHttp.toString(),
+            formatHint: formatHint,
+          );
+        }
+        return platform_interface.DataSource(
+          sourceType: platform_interface.DataSourceType.network,
+          uri: uri,
+          formatHint: formatHint,
+          httpHeaders: httpHeaders,
+        );
+      }
       return platform_interface.DataSource(
         sourceType: platform_interface.DataSourceType.network,
         uri: cached.uri.toString(),
@@ -637,6 +668,20 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
       formatHint: formatHint,
       httpHeaders: httpHeaders,
     );
+  }
+
+  /// Whether a cached manifest must be handed to the platform over HTTP.
+  ///
+  /// AVFoundation refuses to play HLS (and any rewritten manifest) from a
+  /// `file://` path — it only accepts manifests served over HTTP — so iOS
+  /// and macOS serve cached manifest entries through the cache's loopback
+  /// HTTP server instead. Other platforms (e.g. ExoPlayer on Android) play
+  /// the local files directly. Returns `false` for plain media files.
+  bool _manifestRequiresHttp(String uri) {
+    if (VideoPlayerCache.manifestExtension(uri, formatHint) == null) {
+      return false;
+    }
+    return Platform.isIOS || Platform.isMacOS;
   }
 
   Future<void> _prefetchForCache(
