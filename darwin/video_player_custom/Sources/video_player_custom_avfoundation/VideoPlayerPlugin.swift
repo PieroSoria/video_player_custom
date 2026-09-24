@@ -282,7 +282,14 @@ public final class VideoPlayerPlugin: NSObject, FlutterPlugin, AVFoundationVideo
       throw PigeonError(code: "video_player", message: "Invalid URI", details: nil)
     }
     let asset = avFactory.urlAsset(with: url, options: itemOptions)
-    return avFactory.playerItem(with: asset)
+    let item = avFactory.playerItem(with: asset)
+    // For HTTP Live Streaming, keep a longer media buffer than AVFoundation's default so the
+    // playhead does not outrun the video decoder (which surfaces as audio continuing while the
+    // picture freezes). The initial wait to fill this buffer is surfaced to the UI as buffering.
+    if url.pathExtension.lowercased() == "m3u8" {
+      item.preferredForwardBufferDuration = 10.0
+    }
+    return item
   }
 }
 

@@ -76,11 +76,6 @@ static NSDictionary<NSString *, NSValue *> *VPCGetPlayerItemObservations(void) {
 @implementation VPCVideoPlayer {
   // Whether or not player and player item listeners have ever been registered.
   BOOL _listenersRegistered;
-  // Whether the playhead has ever started moving (first play in flight, or later).
-  BOOL _hasStartedPlayback;
-  // Whether a first-play seek is in flight, rendering the first video frame
-  // before the playhead starts so audio does not begin on a blank frame.
-  BOOL _isStartingFirstPlayback;
 }
 
 - (instancetype)initWithPlayerItem:(NSObject<VPCAVPlayerItem> *)item
@@ -348,45 +343,12 @@ NS_INLINE CGFloat radiansToDegrees(CGFloat radians) {
     // https://github.com/flutter/flutter/issues/73643
     if (_targetPlaybackSpeed) {
       [self updateRate];
-    } else if (_isStartingFirstPlayback) {
-      // A first-play seek to render the initial frame is still in flight; the
-      // playhead start follows its completion.
-    } else if (!_hasStartedPlayback) {
-      // Delay the true start until the first video frame has been decoded and
-      // rendered, otherwise audio begins immediately while the video shows a
-      // frozen/blank frame until the decoder catches up.
-      [self beginFirstPlayback];
     } else {
       [_player play];
     }
   } else {
     [_player pause];
   }
-}
-
-/// Decodes and renders the first video frame (for both the AVPlayerLayer / platform view and any
-/// texture output), then starts the playhead so audio and video begin from the same moment.
-- (void)beginFirstPlayback {
-  _hasStartedPlayback = YES;
-  _isStartingFirstPlayback = YES;
-  CMTime currentTime = [_player currentTime];
-  [_player
-      seekToTime:currentTime
-      toleranceBefore:kCMTimeZero
-      toleranceAfter:kCMTimeZero
-      completionHandler:^(BOOL finished) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-          self->_isStartingFirstPlayback = NO;
-          if (self->_disposed || !self->_isPlaying) {
-            return;
-          }
-          if (self->_targetPlaybackSpeed) {
-            [self updateRate];
-          } else {
-            [self->_player play];
-          }
-        });
-      }];
 }
 
 /// Synchronizes the player's playback rate with targetPlaybackSpeed, constrained by the playback
