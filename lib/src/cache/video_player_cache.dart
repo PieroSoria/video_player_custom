@@ -103,6 +103,63 @@ class VideoPlayerCache {
         null;
   }
 
+  /// The media segment duration (seconds) declared by a cached HLS master
+  /// playlist, or `null` when [master] is not an HLS playlist or the value is
+  /// not declared.
+  ///
+  /// `EXT-X-TARGETDURATION` lives in the media playlists, so when the master
+  /// playlist does not declare it the first referenced variant is read.
+  static Future<double?> hlsTargetDurationSeconds(File master) async {
+    if (!await master.exists()) {
+      return null;
+    }
+    final String masterText;
+    try {
+      masterText = await master.readAsString();
+    } catch (_) {
+      return null;
+    }
+    if (!masterText.startsWith('#EXTM3U')) {
+      return null;
+    }
+    final double? direct = _targetDurationOf(masterText);
+    if (direct != null) {
+      return direct;
+    }
+    for (final String line in masterText.split('\n')) {
+      final String trimmed = line.trim();
+      if (trimmed.isEmpty || trimmed.startsWith('#')) {
+        continue;
+      }
+      final File variant =
+          File('${master.parent.path}${Platform.pathSeparator}$trimmed');
+      try {
+        if (!await variant.exists()) {
+          return null;
+        }
+        return _targetDurationOf(await variant.readAsString());
+      } catch (_) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  static double? _targetDurationOf(String playlist) {
+    for (final String line in playlist.split('\n')) {
+      final String trimmed = line.trim();
+      if (!trimmed.startsWith('#EXT-X-TARGETDURATION:')) {
+        continue;
+      }
+      final double? value = double.tryParse(
+          trimmed.substring('#EXT-X-TARGETDURATION:'.length).trim());
+      if (value != null && value > 0) {
+        return value;
+      }
+    }
+    return null;
+  }
+
   /// HTTP URL over the cache's loopback server for [uri]'s cached manifest
   /// entry, or `null` when the entry is not cached or [uri] is not a
   /// manifest source.

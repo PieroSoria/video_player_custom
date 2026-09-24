@@ -640,9 +640,28 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
           cacheKey: cacheKey,
         );
         if (overHttp != null) {
+          Uri uriToPlay = overHttp;
+          // HLS: tell AVFoundation how much media to keep buffered ahead of
+          // the playhead. The value is derived from the presentation's own
+          // segment duration (about three segments) instead of being fixed, so
+          // the decoder keeps enough runway at segment boundaries for the
+          // picture not to freeze while audio continues. The loopback feed
+          // fills instantly, so the preload wait is negligible.
+          if (VideoPlayerCache.manifestExtension(uri, formatHint) == '.m3u8') {
+            final double? target =
+                await VideoPlayerCache.hlsTargetDurationSeconds(cached);
+            if (target != null) {
+              final double seconds =
+                  (target.clamp(1.0, 5.0) * 3.0).toDouble(); // 3-15s of runway.
+              uriToPlay = overHttp.replace(queryParameters: <String, String>{
+                ...overHttp.queryParameters,
+                'forward': seconds.toStringAsFixed(1),
+              });
+            }
+          }
           return platform_interface.DataSource(
             sourceType: platform_interface.DataSourceType.network,
-            uri: overHttp.toString(),
+            uri: uriToPlay.toString(),
             formatHint: formatHint,
           );
         }

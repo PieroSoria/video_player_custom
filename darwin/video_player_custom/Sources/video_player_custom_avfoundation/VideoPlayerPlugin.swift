@@ -282,7 +282,19 @@ public final class VideoPlayerPlugin: NSObject, FlutterPlugin, AVFoundationVideo
       throw PigeonError(code: "video_player", message: "Invalid URI", details: nil)
     }
     let asset = avFactory.urlAsset(with: url, options: itemOptions)
-    return avFactory.playerItem(with: asset)
+    let item = avFactory.playerItem(with: asset)
+    // Cached HLS is served with a `?forward=<seconds>` hint computed from the
+    // playlist's segment duration (three segments) instead of a hard-coded
+    // value. Reflect it as the forward buffer so the playhead keeps enough
+    // decoded video ahead of the audio clock at segment boundaries.
+    if let urlComponents = URLComponents(string: options.uri),
+      let forward = urlComponents.queryItems?.first(where: { $0.name == "forward" })?.value,
+      let seconds = Double(forward),
+      seconds > 0
+    {
+      item.preferredForwardBufferDuration = seconds
+    }
+    return item
   }
 }
 

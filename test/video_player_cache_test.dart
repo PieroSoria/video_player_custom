@@ -522,6 +522,45 @@ void main() {
     );
   });
 
+  test('HLS forward buffer is derived from the rewritten segment duration',
+      () async {
+    final HlsFixture fixture = await serveHls();
+    addTearDown(fixture.server.close);
+    await cache.prefetch(
+      fixture.masterUrl,
+      cacheKey: 'show',
+      formatHint: VideoFormat.hls,
+    );
+
+    final File? master = await cache.fileFor(
+      fixture.masterUrl,
+      cacheKey: 'show',
+      formatHint: VideoFormat.hls,
+    );
+    // The rewritten master has no EXT-X-TARGETDURATION, so the value is read
+    // from the referenced (rewritten) variant playlist: 10 seconds.
+    expect(
+      await VideoPlayerCache.hlsTargetDurationSeconds(master!),
+      10.0,
+    );
+
+    // A master declaring the value directly returns it immediately.
+    final Directory directDir = Directory('${tempDir.path}/direct');
+    await directDir.create(recursive: true);
+    final File direct = File('${directDir.path}/master.m3u8');
+    await direct.writeAsString('''#EXTM3U
+#EXT-X-TARGETDURATION:4
+#EXTINF:4.0,
+seg.ts
+''');
+    expect(await VideoPlayerCache.hlsTargetDurationSeconds(direct), 4.0);
+
+    // A non-HLS file reports no target duration.
+    final File notHls = File('${directDir.path}/not.m3u8');
+    await notHls.writeAsString('just bytes');
+    expect(await VideoPlayerCache.hlsTargetDurationSeconds(notHls), isNull);
+  });
+
   test('DASH prefetch downloads segments and rewrites the manifest to'
       ' local files', () async {
     final DashFixture fixture = await serveDash();
