@@ -62,9 +62,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Wraps the underlying playerItem's videoComposition property.
 @property(nonatomic, copy, nullable) AVVideoComposition *videoComposition;
-
-/// Wraps the underlying playerItem's preferredForwardBufferDuration property.
-@property(nonatomic, assign) NSTimeInterval preferredForwardBufferDuration;
 @end
 
 #if TARGET_OS_IOS

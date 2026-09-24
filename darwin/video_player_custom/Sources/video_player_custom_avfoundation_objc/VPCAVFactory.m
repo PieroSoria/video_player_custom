@@ -75,14 +75,6 @@
 - (void)setVideoComposition:(AVVideoComposition *)videoComposition {
   self.playerItem.videoComposition = videoComposition;
 }
-
-- (NSTimeInterval)preferredForwardBufferDuration {
-  return self.playerItem.preferredForwardBufferDuration;
-}
-
-- (void)setPreferredForwardBufferDuration:(NSTimeInterval)preferredForwardBufferDuration {
-  self.playerItem.preferredForwardBufferDuration = preferredForwardBufferDuration;
-}
 @end
 
 #pragma mark -

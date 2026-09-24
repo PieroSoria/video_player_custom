@@ -301,11 +301,7 @@ final controller = VideoPlayerController.networkUrl(
   (`http://127.0.0.1:<port>/...`) — offline playback works the same. Single
   files (MP4, MKV, ...) play directly from disk everywhere. If the backend
   blocks cleartext HTTP, add `NSAllowsLocalNetworking` under
-  `NSAppTransportSecurity` in `Info.plist`. For HLS playback, the player is
-  configured with a longer forward media buffer than the platform default so
-  the playhead does not outrun the video decoder (which otherwise shows as
-  audio continuing while the picture freezes); the small initial wait to fill
-  that buffer is reported as buffering to the `loadingBuilder`.
+  `NSAppTransportSecurity` in `Info.plist`.
 - **Live**: pass `isLive: true` and the source is never written to the cache
   (a manifest snapshot goes stale in seconds). Live manifests themselves
   (dynamic DASH, DVR/Smooth Streaming) are also rejected by the downloaders
