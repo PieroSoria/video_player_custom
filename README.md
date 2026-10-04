@@ -47,6 +47,9 @@ the source controller ends its PiP session, so keep the controller alive while
 PiP is active. Run `flutter run -d macos -t lib/basic.dart` inside `example/` to
 try the PiP button.
 
+Closing the native PiP window pauses both video and audio. Using its restore
+button or calling `exitPipMode()` returns to inline playback without pausing.
+
 Entry and exit were verified in the visible macOS example. The integration test
 covers support queries, reset and rejection of texture views; its native view
 has no attached, sized layer, so it cannot exercise the floating PiP window.

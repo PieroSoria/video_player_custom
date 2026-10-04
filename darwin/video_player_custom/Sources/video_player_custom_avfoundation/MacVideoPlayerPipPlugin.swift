@@ -14,6 +14,8 @@ final class MacVideoPlayerPipPlugin: NSObject, AVPictureInPictureControllerDeleg
   private var readiness: NSKeyValueObservation?
   private var timeout: DispatchWorkItem?
   private var resetting = false
+  private var restoring = false
+  private var exitingFromApp = false
 
   init(registrar: FlutterPluginRegistrar, layerProvider: @escaping (Int64) -> AVPlayerLayer?) {
     channel = FlutterMethodChannel(name: "video_player_pip", binaryMessenger: registrar.messenger)
@@ -40,6 +42,7 @@ final class MacVideoPlayerPipPlugin: NSObject, AVPictureInPictureControllerDeleg
       enter(id.int64Value, result: result)
     case "exitPipMode":
       guard let controller, controller.isPictureInPictureActive else { result(false); return }
+      exitingFromApp = true
       controller.stopPictureInPicture()
       result(true)
     case "reset": reset(); result(nil)
@@ -116,6 +119,8 @@ final class MacVideoPlayerPipPlugin: NSObject, AVPictureInPictureControllerDeleg
     controller = nil
     playerId = nil
     resetting = false
+    restoring = false
+    exitingFromApp = false
   }
 
   func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
@@ -134,6 +139,11 @@ final class MacVideoPlayerPipPlugin: NSObject, AVPictureInPictureControllerDeleg
 
   func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
     guard controller === pictureInPictureController else { return }
+    // Closing the floating window cancels playback. Restoring the inline view
+    // or stopping PiP through the API keeps the existing playback state.
+    if !restoring && !exitingFromApp && !resetting {
+      pictureInPictureController.playerLayer.player?.pause()
+    }
     channel.invokeMethod("pipModeChanged", arguments: ["isInPipMode": false])
     finishStart(false)
     clear()
@@ -142,6 +152,7 @@ final class MacVideoPlayerPipPlugin: NSObject, AVPictureInPictureControllerDeleg
   func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController,
                                   restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
     guard controller === pictureInPictureController, !resetting else { completionHandler(false); return }
+    restoring = true
     let seconds = pictureInPictureController.playerLayer.player?.currentTime().seconds ?? 0
     restoreWindow()
     channel.invokeMethod("onPipRestore", arguments: ["positionMs": seconds.isFinite ? Int64(max(0, seconds) * 1000) : 0])
