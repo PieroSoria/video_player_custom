@@ -69,6 +69,9 @@ public final class VideoPlayerPlugin: NSObject, FlutterPlugin, AVFoundationVideo
   private let assetProvider: VPCAssetProvider
   private var nextPlayerIdentifier: Int64 = 1
   var playersByIdentifier: [Int64: VPCVideoPlayer] = [:]
+  #if os(macOS)
+    private var macPip: MacVideoPlayerPipPlugin?
+  #endif
 
   public static func register(with registrar: FlutterPluginRegistrar) {
     let instance = VideoPlayerPlugin(registrar: registrar)
@@ -90,6 +93,10 @@ public final class VideoPlayerPlugin: NSObject, FlutterPlugin, AVFoundationVideo
     registrar.register(factory, withId: "plugins.flutter.dev/video_player_custom_ios")
     #if os(iOS)
       VideoPlayerPipPlugin.register(with: registrar, playerLayerProvider: { [weak factory] id in
+        factory?.playerLayer(for: id)
+      })
+    #elseif os(macOS)
+      instance.macPip = MacVideoPlayerPipPlugin(registrar: registrar, layerProvider: { [weak factory] id in
         factory?.playerLayer(for: id)
       })
     #endif
@@ -133,6 +140,10 @@ public final class VideoPlayerPlugin: NSObject, FlutterPlugin, AVFoundationVideo
   }
 
   public func detachFromEngine(for registrar: FlutterPluginRegistrar) {
+    #if os(macOS)
+      macPip?.reset()
+      macPip = nil
+    #endif
     for player in playersByIdentifier.values {
       // Remove the channel and texture cleanup, and the event listener, to ensure that the player
       // doesn't message the engine that is no longer connected.
@@ -260,6 +271,9 @@ public final class VideoPlayerPlugin: NSObject, FlutterPlugin, AVFoundationVideo
 
     player.onDisposed = { [weak self] in
       guard let strongSelf = self else { return }
+      #if os(macOS)
+        strongSelf.macPip?.reset(playerId: playerId)
+      #endif
       SetUpVPCVideoPlayerInstanceApiWithSuffix(strongSelf.binaryMessenger, nil, channelSuffix)
       extraDisposeHandler?()
       strongSelf.playersByIdentifier.removeValue(forKey: playerId)

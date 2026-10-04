@@ -10,7 +10,7 @@ A Flutter video player for Android, iOS, macOS, Windows, Linux and web.
 |----------|------------------|--------------------|
 | Android SDK 24+ | Vendored Media3 | Android 8+ with device support |
 | iOS 15+ | Shared AVFoundation | Supported devices, using `VideoViewType.platformView` |
-| macOS 12+ | Shared AVFoundation | Not implemented |
+| macOS 12+ | Shared AVFoundation | Native PiP with `VideoViewType.platformView` |
 | Windows | media_kit | Compact, always-on-top application window |
 | Linux | media_kit / libmpv | Not implemented |
 | Web | HTML video | Not implemented |
@@ -26,10 +26,30 @@ Unsupported PiP operations return `false`; `reset()` completes without error.
 - `lib/src/pip/`: public PiP API and method-channel implementation.
 - `android/`: native playback and PiP, registered together.
 - `darwin/video_player_custom/`: a shared Swift package for iOS and macOS;
-  iOS-only PiP sources are conditionally compiled.
+  platform-specific PiP sources are conditionally compiled.
 - Windows and Linux use the native playback plugins supplied by `media_kit`.
   `windows/` adds native window management for Windows PiP. The platform folders
   inside `example/` are the application runners and are required to build it.
+
+### macOS Picture-in-Picture
+
+Create the controller with `viewType: VideoViewType.platformView` and keep its
+`VideoPlayer` mounted. After initializing, use `controller.enterPipMode()` and
+`controller.exitPipMode()`. The native PiP controller uses the same AVPlayer as
+the inline video, preserving playback position, volume and looping. macOS
+controls the PiP window size; `width` and `height` are ignored. Texture views
+currently return `false` from `enterPipMode()`.
+
+`onPipModeChanged` reports start/stop and restore requests. Restoring raises the
+source window and includes the playback position. `reset()` releases the PiP
+session without pausing the video or changing the shared audio session. Disposing
+the source controller ends its PiP session, so keep the controller alive while
+PiP is active. Run `flutter run -d macos -t lib/basic.dart` inside `example/` to
+try the PiP button.
+
+Entry and exit were verified in the visible macOS example. The integration test
+covers support queries, reset and rejection of texture views; its native view
+has no attached, sized layer, so it cannot exercise the floating PiP window.
 
 ### Windows and Linux
 

@@ -22,14 +22,17 @@ import AVFoundation
 final class NativeVideoViewFactory: NSObject, FlutterPlatformViewFactory {
   private let messenger: FlutterBinaryMessenger
   private let playerByIdentifierProvider: (Int64) -> VPCVideoPlayer?
-  #if os(iOS)
-    private let playerLayers = NSMapTable<NSNumber, AVPlayerLayer>.strongToWeakObjects()
+  private let playerViews = NSMapTable<NSNumber, VPCNativeVideoView>.strongToWeakObjects()
 
-    func playerLayer(for playerId: Int64) -> AVPlayerLayer? {
-      guard playerByIdentifierProvider(playerId) != nil else { return nil }
-      return playerLayers.object(forKey: NSNumber(value: playerId))
-    }
-  #endif
+  func playerLayer(for playerId: Int64) -> AVPlayerLayer? {
+    guard playerByIdentifierProvider(playerId) != nil else { return nil }
+    guard let view = playerViews.object(forKey: NSNumber(value: playerId)) else { return nil }
+    #if os(iOS)
+      return view.view().layer as? AVPlayerLayer
+    #else
+      return view.layer as? AVPlayerLayer
+    #endif
+  }
 
   /// Initializes a new instance of NativeVideoViewFactory with the given messenger and
   /// a block that provides video players associated with their identifiers.
@@ -71,11 +74,7 @@ final class NativeVideoViewFactory: NSObject, FlutterPlatformViewFactory {
     // and there's no mechanism to report an error, so just force-unwrap.
     let player = playerByIdentifierProvider(args.playerId)!
     let view = VPCNativeVideoView(player: player.player)
-    #if os(iOS)
-      if let layer = view.view().layer as? AVPlayerLayer {
-        playerLayers.setObject(layer, forKey: NSNumber(value: args.playerId))
-      }
-    #endif
+    playerViews.setObject(view, forKey: NSNumber(value: args.playerId))
     return view
   }
 }

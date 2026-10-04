@@ -75,7 +75,7 @@ class VideoPlayerPip {
   /// - [width]: Desired width of the PiP window (in pixels)
   /// - [height]: Desired height of the PiP window (in pixels)
   ///
-/// The controller must be initialized. iOS requires
+  /// The controller must be initialized. iOS and macOS require
   /// [VideoViewType.platformView]. Windows opens a small, borderless,
   /// always-on-top window that renders the video natively; the app keeps
   /// running underneath and can be used normally.
@@ -234,7 +234,7 @@ class VideoPlayerPip {
     switch (call.method) {
       case 'nativeLog':
         final String message = call.arguments as String;
-        debugPrint('[NATIVE iOS] $message');
+        debugPrint('[NATIVE PiP] $message');
         break;
       case 'pipModeChanged':
         final bool isInPipMode = call.arguments['isInPipMode'] as bool;
