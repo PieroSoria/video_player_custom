@@ -26,10 +26,9 @@ const String kDesktopMethodChannel = 'video_player_custom/desktop';
 /// a [Texture] backed by the native video backend.
 class NativeDesktopVideoPlayer extends VideoPlayerPlatform {
   /// Creates a new native desktop player.
-  NativeDesktopVideoPlayer({
-    @visibleForTesting MethodChannel? methodChannel,
-  }) : _methodChannel =
-           methodChannel ?? const MethodChannel(kDesktopMethodChannel);
+  NativeDesktopVideoPlayer({@visibleForTesting MethodChannel? methodChannel})
+    : _methodChannel =
+          methodChannel ?? const MethodChannel(kDesktopMethodChannel);
 
   final MethodChannel _methodChannel;
 
@@ -56,8 +55,13 @@ class NativeDesktopVideoPlayer extends VideoPlayerPlatform {
     if (player == null) {
       return;
     }
-    await player.dispose();
-    await _methodChannel.invokeMethod<void>('dispose', {'playerId': playerId});
+    try {
+      await player.dispose();
+    } finally {
+      await _methodChannel.invokeMethod<void>('dispose', {
+        'playerId': playerId,
+      });
+    }
   }
 
   @override
@@ -78,7 +82,9 @@ class NativeDesktopVideoPlayer extends VideoPlayerPlatform {
       case DataSourceType.asset:
         final String? asset = dataSource.asset;
         if (asset == null) {
-          throw ArgumentError('"asset" must be non-null for an asset data source');
+          throw ArgumentError(
+            '"asset" must be non-null for an asset data source',
+          );
         }
         uri = await _resolveAsset(asset, dataSource.package);
       case DataSourceType.network:
@@ -94,10 +100,8 @@ class NativeDesktopVideoPlayer extends VideoPlayerPlatform {
           ? 'platformView'
           : 'textureView',
     };
-    final Map<String, dynamic>? result = await _methodChannel.invokeMapMethod<String, dynamic>(
-      'create',
-      arguments,
-    );
+    final Map<String, dynamic>? result = await _methodChannel
+        .invokeMapMethod<String, dynamic>('create', arguments);
     if (result == null) {
       throw PlatformException(code: 'video_player', message: 'create failed');
     }
@@ -119,8 +123,10 @@ class NativeDesktopVideoPlayer extends VideoPlayerPlatform {
     // Desktop builds keep bundled assets next to the executable under
     // `data/flutter_assets`, so resolve the file directly.
     final String executableDir = File(Platform.resolvedExecutable).parent.path;
-    final File assetFile = File('$executableDir${Platform.pathSeparator}data'
-        '${Platform.pathSeparator}flutter_assets${Platform.pathSeparator}$key');
+    final File assetFile = File(
+      '$executableDir${Platform.pathSeparator}data'
+      '${Platform.pathSeparator}flutter_assets${Platform.pathSeparator}$key',
+    );
     if (assetFile.existsSync()) {
       return assetFile.path;
     }
@@ -136,7 +142,10 @@ class NativeDesktopVideoPlayer extends VideoPlayerPlatform {
 
   @override
   Future<void> setLooping(int playerId, bool looping) {
-    return _methodChannel.invokeMethod<void>('setLooping', {'playerId': playerId, 'looping': looping});
+    return _methodChannel.invokeMethod<void>('setLooping', {
+      'playerId': playerId,
+      'looping': looping,
+    });
   }
 
   @override
@@ -151,22 +160,35 @@ class NativeDesktopVideoPlayer extends VideoPlayerPlatform {
 
   @override
   Future<void> setVolume(int playerId, double volume) {
-    return _methodChannel.invokeMethod<void>('setVolume', {'playerId': playerId, 'volume': volume});
+    return _methodChannel.invokeMethod<void>('setVolume', {
+      'playerId': playerId,
+      'volume': volume,
+    });
   }
 
   @override
   Future<void> setPlaybackSpeed(int playerId, double speed) {
-    return _methodChannel.invokeMethod<void>('setPlaybackSpeed', {'playerId': playerId, 'speed': speed});
+    return _methodChannel.invokeMethod<void>('setPlaybackSpeed', {
+      'playerId': playerId,
+      'speed': speed,
+    });
   }
 
   @override
   Future<void> seekTo(int playerId, Duration position) {
-    return _methodChannel.invokeMethod<void>('seekTo', {'playerId': playerId, 'positionMs': position.inMilliseconds});
+    return _methodChannel.invokeMethod<void>('seekTo', {
+      'playerId': playerId,
+      'positionMs': position.inMilliseconds,
+    });
   }
 
   @override
   Future<Duration> getPosition(int playerId) async {
-    final int positionMs = await _methodChannel.invokeMethod<int>('getPosition', {'playerId': playerId}) ?? 0;
+    final int positionMs =
+        await _methodChannel.invokeMethod<int>('getPosition', {
+          'playerId': playerId,
+        }) ??
+        0;
     return Duration(milliseconds: positionMs);
   }
 
@@ -228,6 +250,7 @@ class _DesktopPlayer {
       StreamController<VideoEvent>.broadcast();
   StreamSubscription<dynamic>? _eventSubscription;
   Timer? _bufferPollingTimer;
+  bool _bufferPollInProgress = false;
   int _lastBufferPosition = -1;
   bool _isDisposed = false;
 
@@ -235,8 +258,10 @@ class _DesktopPlayer {
   Stream<VideoEvent> get videoEvents {
     _eventSubscription ??= _eventChannel.receiveBroadcastStream().listen(
       _onStreamEvent,
-      onError: (Object e) {
-        _eventStreamController.addError(e);
+      onError: (Object error, StackTrace stackTrace) {
+        if (!_isDisposed) {
+          _eventStreamController.addError(error, stackTrace);
+        }
       },
     );
     return _eventStreamController.stream;
@@ -246,43 +271,30 @@ class _DesktopPlayer {
     _isDisposed = true;
     _bufferPollingTimer?.cancel();
     _bufferPollingTimer = null;
-    await _eventSubscription?.cancel();
-    _eventSubscription = null;
-    await _eventStreamController.close();
+    try {
+      await _eventSubscription?.cancel();
+    } finally {
+      _eventSubscription = null;
+      // A paused listener may postpone the stream's done event indefinitely.
+      // Closing it must not delay release of the native texture and player.
+      unawaited(_eventStreamController.close());
+    }
   }
 
   void _onStreamEvent(dynamic event) {
+    if (_isDisposed) {
+      return;
+    }
     final Map<dynamic, dynamic> map = event as Map<dynamic, dynamic>;
     // The strings here must match the ones emitted by the native backends.
     if (map['event'] == 'error') {
       _eventStreamController.addError(
-        PlatformException(code: 'video_error', message: map['message'] as String?),
+        PlatformException(
+          code: 'video_error',
+          message: map['message'] as String?,
+        ),
       );
       return;
-    }
-    if (map['event'] == 'initialized') {
-      // No native buffer-position event exists; poll it like the Android
-      // backend does. The range reported is the file if fully known.
-      _bufferPollingTimer ??= Timer.periodic(const Duration(seconds: 1), (Timer timer) async {
-        final int? position = await _methodChannel.invokeMethod<int>(
-          'getBufferedPosition',
-          {'playerId': playerId},
-        );
-        if (_isDisposed || position == null) {
-          return;
-        }
-        if (position != _lastBufferPosition) {
-          _lastBufferPosition = position;
-          _eventStreamController.add(
-            VideoEvent(
-              eventType: VideoEventType.bufferingUpdate,
-              buffered: <DurationRange>[
-                DurationRange(Duration.zero, Duration(milliseconds: position)),
-              ],
-            ),
-          );
-        }
-      });
     }
     _eventStreamController.add(switch (map['event']) {
       'initialized' => VideoEvent(
@@ -308,6 +320,47 @@ class _DesktopPlayer {
       ),
       _ => VideoEvent(eventType: VideoEventType.unknown),
     });
+    if (map['event'] == 'initialized' && _bufferPollingTimer == null) {
+      // Query once immediately so a cached file reports its buffer as soon as
+      // it initializes, then keep track of network buffering once per second.
+      _bufferPollingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        unawaited(_pollBufferedPosition());
+      });
+      unawaited(_pollBufferedPosition());
+    }
+  }
+
+  Future<void> _pollBufferedPosition() async {
+    if (_isDisposed || _bufferPollInProgress) {
+      return;
+    }
+    _bufferPollInProgress = true;
+    try {
+      final int? position = await _methodChannel.invokeMethod<int>(
+        'getBufferedPosition',
+        {'playerId': playerId},
+      );
+      if (_isDisposed || position == null || position == _lastBufferPosition) {
+        return;
+      }
+      _lastBufferPosition = position;
+      _eventStreamController.add(
+        VideoEvent(
+          eventType: VideoEventType.bufferingUpdate,
+          buffered: <DurationRange>[
+            DurationRange(Duration.zero, Duration(milliseconds: position)),
+          ],
+        ),
+      );
+    } catch (error, stackTrace) {
+      if (!_isDisposed) {
+        _bufferPollingTimer?.cancel();
+        _bufferPollingTimer = null;
+        _eventStreamController.addError(error, stackTrace);
+      }
+    } finally {
+      _bufferPollInProgress = false;
+    }
   }
 
   DurationRange _toDurationRange(dynamic value) {

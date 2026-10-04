@@ -1,9 +1,18 @@
 ## Unreleased
 
-* Adds Windows compact Picture-in-Picture with play/pause, native window
-  restoration, lifecycle events and automatic cleanup.
-* Adds a Windows media_kit adapter that forwards initialization errors and
-  releases player resources; includes real Windows integration coverage.
+* Completes Windows Picture-in-Picture with an independent native window,
+  play/pause, close/restore controls, lifecycle events and owner disposal cleanup.
+* Shows a Picture in Picture placeholder in the owning Windows video view and
+  removes intermediate black repaints and color artifacts when scaling PiP.
+* Adds Windows PiP hover controls with a seekable progress bar, centered
+  10-second skip/playback buttons, delayed hiding and paused seek previews.
+* Uses native Windows Media Foundation/WASAPI playback without media_kit;
+  opens sources without blocking Flutter's UI and fixes frame color/alpha/stride,
+  seeking and HTTP request headers.
+* Fixes Windows cache keys, eviction during active downloads, live HLS caching,
+  and disposal after native initialization failures.
+* Adds native Windows PiP and offline MP4 cache integration coverage.
+* Migrates Material imports to material_ui for Flutter 3.47/Dart 3.13.
 * Adds a PiP button to the example player.
 
 ## 2.14.0

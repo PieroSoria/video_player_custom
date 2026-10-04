@@ -21,6 +21,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -92,7 +93,7 @@ class AudioSink {
 /// All Media Foundation and WASAPI objects are confined to a single pump
 /// thread (initialized as an MTA) so no COM apartment marshalling is needed.
 /// Decoded video frames are converted to 32-bit BGRA and pushed into a
-/// Flutter pixel-buffer texture; decoded PCM audio is rendered through
+/// Flutter RGBA pixel-buffer texture; decoded PCM audio is rendered through
 /// [AudioSink].
 class WmfVideoPlayer
     : public std::enable_shared_from_this<WmfVideoPlayer> {
@@ -108,7 +109,15 @@ class WmfVideoPlayer
 
   /// Spawns the pump thread and opens |url| on it. On failure returns false and
   /// sets |error|.
-  bool Initialize(const std::string& url, std::string* error);
+  bool Initialize(const std::string& url, std::string* error,
+                  std::map<std::string, std::string> http_headers = {});
+
+  /// Opens media without blocking Flutter's merged UI/platform thread. The
+  /// completion callback runs on the platform thread and is cancelled on
+  /// Dispose. Use one initialization entry point per player instance.
+  void InitializeAsync(
+      const std::string& url, std::map<std::string, std::string> http_headers,
+      std::function<void(bool, const std::string&)> on_initialized);
 
   /// Stops the pump thread and releases all native resources. Idempotent.
   void Dispose();
@@ -117,14 +126,30 @@ class WmfVideoPlayer
   void Play();
   void Pause();
   void SeekTo(int64_t position_ms);
+  // Resolve relative seeks on the decoder thread so consecutive clicks
+  // accumulate even before the previous seek reaches the published play head.
+  void SeekBy(int64_t offset_ms);
   void SetLooping(bool looping);
   void SetVolume(float volume);
   void SetPlaybackSpeed(float speed);
   int64_t GetPositionMs() const;
   int64_t GetBufferedPositionMs() const;
+  // Setup publishes the immutable duration before ready_; do not read it
+  // while initialization is still running on the decoder thread.
+  int64_t GetDurationMs() const {
+    return ready_.load() ? duration_ms_ : 0;
+  }
 
   int64_t texture_id() const { return texture_id_; }
   bool ready() const { return ready_; }
+
+  /// PiP requires initialized video media and a live player. The dimensions
+  /// are published before ready_ and remain valid until Dispose begins.
+  bool CanEnterPip() const {
+    if (!ready_.load() || dispose_started_.load()) return false;
+    std::lock_guard<std::mutex> lock(frame_mutex_);
+    return video_width_ > 0 && video_height_ > 0;
+  }
 
   /// Copies the most recently decoded frame (top-down BGRA, |stride| bytes per
   /// row) into |data| for external rendering (e.g. the native PiP window).
@@ -140,7 +165,9 @@ class WmfVideoPlayer
   bool IsPlaying() const { return playing_.load(); }
 
  private:
-  enum class CommandType { kNone, kPlay, kPause, kSeek, kSetVolume, kDispose };
+  enum class CommandType {
+    kNone, kPlay, kPause, kSeek, kSeekBy, kSetVolume, kDispose
+  };
 
   struct Command {
     CommandType type;
@@ -148,9 +175,8 @@ class WmfVideoPlayer
     float volume = 0.0f;
   };
 
-  // One frame ring slot handed to the Flutter engine through the texture
-  // callback. Slots are recycled, so a buffer referenced by the engine stays
-  // valid across a few frame generations.
+  // BGRA frame ring shared by the decoder and PiP. Texture callbacks take an
+  // independent RGBA snapshot with a Flutter release callback.
   struct FrameSlot {
     std::vector<uint8_t> data;
     int64_t width = 0;
@@ -168,6 +194,7 @@ class WmfVideoPlayer
   bool ReadVideoSample(ComPtr<IMFSample>* sample,
                        bool* end_of_stream,
                        bool* type_changed);
+  void RefreshVideoOutput();
   void PresentPaced(const ComPtr<IMFSample>& sample, LONGLONG pts);
   void PresentFrame(const ComPtr<IMFSample>& sample);
   void HandleEndOfStream();
@@ -185,6 +212,7 @@ class WmfVideoPlayer
   int64_t texture_id_ = -1;
 
   EventCallback on_event_;
+  std::function<void(bool, const std::string&)> on_initialized_;
   std::thread pump_thread_;
   std::atomic<bool> disposed_ = false;
   std::atomic<bool> ready_ = false;
@@ -198,6 +226,9 @@ class WmfVideoPlayer
 
   // The URL opened by [Initialize].
   std::string url_;
+  std::map<std::string, std::string> http_headers_;
+  std::shared_ptr<std::atomic<bool>> http_cancelled_ =
+      std::make_shared<std::atomic<bool>>(false);
 
   std::mutex command_mutex_;
   std::condition_variable command_cv_;
@@ -222,14 +253,15 @@ class WmfVideoPlayer
 
   // Playback state.
   std::atomic<bool> playing_ = false;
-  bool looping_ = false;
-  float speed_ = 1.0f;
-  float volume_ = 1.0f;
+  std::atomic<bool> looping_ = false;
+  std::atomic<float> speed_ = 1.0f;
+  std::atomic<float> volume_ = 1.0f;
   bool video_eof_ = true;
   bool audio_eof_ = true;
   bool first_video_frame_ = true;
   int64_t last_video_pts_ = 0;
   int64_t last_audio_pts_ms_ = 0;
+  int64_t seek_target_ms_ = 0;
   bool was_buffering_ = false;
 
   std::atomic<int64_t> position_ms_ = 0;
@@ -238,10 +270,9 @@ class WmfVideoPlayer
 
   // ---- Texture / frame state ----
   static constexpr size_t kFrameSlots = 3;
-  std::mutex frame_mutex_;
+  mutable std::mutex frame_mutex_;
   std::array<FrameSlot, kFrameSlots> frame_slots_;
   size_t frame_slot_index_ = 0;
-  FlutterDesktopPixelBuffer pixel_buffer_ = {};
   AudioSink audio_;
 };
 

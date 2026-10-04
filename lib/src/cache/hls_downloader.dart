@@ -43,8 +43,18 @@ class HlsDownloader {
   /// (post-redirect) URL the manifest was loaded from, used to resolve
   /// relative references.
   Future<String> _rewrite(String manifest, String baseUrl) async {
+    final List<String> lines = manifest.split('\n');
+    final bool isMediaPlaylist = lines.any((String line) {
+      final String trimmed = line.trim();
+      return trimmed.startsWith('#EXTINF:') ||
+          trimmed.startsWith('#EXT-X-TARGETDURATION:');
+    });
+    if (isMediaPlaylist &&
+        !lines.any((String line) => line.trim() == '#EXT-X-ENDLIST')) {
+      throw FormatException('Live HLS playlists are never cached');
+    }
     final List<String> output = <String>[];
-    for (final String raw in manifest.split('\n')) {
+    for (final String raw in lines) {
       final String line = raw.trim();
       if (line.isEmpty) {
         output.add(raw);

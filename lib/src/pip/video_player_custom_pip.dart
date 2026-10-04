@@ -4,9 +4,13 @@
 // ignore_for_file: invalid_use_of_visible_for_testing_member
 
 import 'dart:async';
-import 'package:flutter/material.dart';
+
+import 'package:flutter/foundation.dart';
+
 import 'package:flutter/services.dart';
+
 import '../../video_player.dart';
+import 'pip_state.dart';
 import 'video_player_custom_pip_platform_interface.dart';
 
 export 'video_player_custom_pip_platform_interface.dart'
@@ -22,13 +26,14 @@ export 'extensions.dart';
 /// [isRestored] is `true` when the user tapped the PiP window's restore/expand
 /// button; use it to navigate back to your full-screen video screen.
 /// [position] (only set when [isRestored] is `true`) is where the native
-/// AVPlayer was when PiP was expanded, so you can resume exactly where the
+/// player was when PiP was expanded, so you can resume exactly where the
 /// video was left off.
 class PipModeChanged {
   const PipModeChanged({
     required this.isInPip,
     this.isRestored = false,
     this.position,
+    this.playerId,
   });
 
   /// Whether PiP is currently active.
@@ -39,6 +44,9 @@ class PipModeChanged {
 
   /// Native playback position when PiP was restored (see [isRestored]).
   final Duration? position;
+
+  /// Player whose native PiP state changed, when reported by the platform.
+  final int? playerId;
 
   @override
   String toString() =>
@@ -107,16 +115,33 @@ class VideoPlayerPip {
       return false;
     }
     // Install the native callback handler even without an event subscriber.
-    instance;
+    final VideoPlayerPip pip = instance;
+    final int playerId = controller.playerId;
+    final Object? token = pipPlayerToken(playerId);
+    if (token == null) {
+      return false;
+    }
+    final int command = ++pip._commandGeneration;
+    final int revision = pip._stateRevision;
+    pip._pendingEnterPlayerId = playerId;
     try {
       final entered = await _platform.enterPipMode(
-        controller.playerId,
+        playerId,
         width: width,
         height: height,
       );
-      return entered;
-    } catch (_) {
-      rethrow;
+      final bool live = identical(pipPlayerToken(playerId), token);
+      if (entered &&
+          live &&
+          pip._commandGeneration == command &&
+          pip._stateRevision == revision) {
+        pip._publishOwner(playerId);
+      }
+      return entered && live;
+    } finally {
+      if (pip._commandGeneration == command) {
+        pip._pendingEnterPlayerId = null;
+      }
     }
   }
 
@@ -124,7 +149,16 @@ class VideoPlayerPip {
   ///
   /// Returns `true` if PiP mode was exited successfully, or `false` otherwise.
   static Future<bool> exitPipMode() async {
-    return _platform.exitPipMode();
+    final VideoPlayerPip pip = instance;
+    final int command = ++pip._commandGeneration;
+    final int? playerId = pipPlayerId.value ?? pip._pendingEnterPlayerId;
+    final bool exited = await _platform.exitPipMode();
+    if (exited &&
+        pip._commandGeneration == command &&
+        pipPlayerId.value == playerId) {
+      pip._publishOwner(null);
+    }
+    return exited;
   }
 
   /// Checks if the app is currently in PiP mode.
@@ -140,7 +174,13 @@ class VideoPlayerPip {
   /// Call this when leaving the video screen (e.g. in your widget's `dispose`)
   /// to guarantee a clean slate for the next playback session.
   static Future<void> reset() async {
+    final VideoPlayerPip pip = instance;
+    final int command = ++pip._commandGeneration;
     await _platform.reset();
+    if (pip._commandGeneration == command) {
+      pip._pendingEnterPlayerId = null;
+      pip._publishOwner(null);
+    }
   }
 
   /// Single stream of PiP state changes.
@@ -217,13 +257,98 @@ class VideoPlayerPip {
   }
 
   // Singleton instance
-  static final VideoPlayerPip _instance = VideoPlayerPip._();
+  static VideoPlayerPip? _instance;
 
   /// The shared instance of [VideoPlayerPip].
-  static VideoPlayerPip get instance => _instance;
+  static VideoPlayerPip get instance => _instance ??= VideoPlayerPip._();
 
   VideoPlayerPip._() {
+    _lastOwner = pipPlayerId.value;
+    pipPlayerId.addListener(_onOwnerChanged);
     _channel.setMethodCallHandler(_handleMethodCall);
+  }
+
+  int _commandGeneration = 0;
+  bool _disposed = false;
+  int _stateRevision = 0;
+  int? _pendingEnterPlayerId;
+  int? _lastOwner;
+  PipModeChanged? _nextModeEvent;
+
+  bool get _usesWindowsPlaceholder =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
+
+  void _onOwnerChanged() {
+    final int? owner = pipPlayerId.value;
+    _stateRevision++;
+    if (_usesWindowsPlaceholder) {
+      _onPipModeChangedController.add(
+        _nextModeEvent ??
+            PipModeChanged(
+              isInPip: owner != null,
+              playerId: owner ?? _lastOwner,
+            ),
+      );
+    }
+    _lastOwner = owner;
+  }
+
+  void _publishOwner(int? owner, {bool restored = false, Duration? position}) {
+    if (pipPlayerId.value == owner) {
+      return;
+    }
+    _nextModeEvent = PipModeChanged(
+      isInPip: owner != null,
+      isRestored: restored,
+      position: position,
+      playerId: owner ?? pipPlayerId.value,
+    );
+    try {
+      pipPlayerId.value = owner;
+    } finally {
+      _nextModeEvent = null;
+    }
+  }
+
+  void _nativeModeChanged(
+    Map<Object?, Object?>? args, {
+    required bool entered,
+    bool restored = false,
+  }) {
+    final int? playerId =
+        args?['playerId'] as int? ?? pipPlayerId.value ?? _pendingEnterPlayerId;
+    final int? positionMs = args?['positionMs'] as int?;
+    final Duration? position = positionMs == null
+        ? null
+        : Duration(milliseconds: positionMs);
+    if (playerId != null && entered) {
+      if (pipPlayerToken(playerId) != null) {
+        _stateRevision++;
+        _publishOwner(playerId);
+      }
+    } else if (playerId != null && pipPlayerId.value == playerId) {
+      _publishOwner(
+        null,
+        restored: restored,
+        position: restored ? position : null,
+      );
+    } else if (playerId != null && _pendingEnterPlayerId == playerId) {
+      // A close callback can arrive before the enter method's success reply.
+      _stateRevision++;
+    }
+    if (!_usesWindowsPlaceholder) {
+      // Preserve the native event contract of the mobile and Apple backends.
+      // Their older callbacks omit IDs; commands must not synthesize duplicate
+      // close events before the native didStop notification arrives.
+      _onPipModeChangedController.add(
+        PipModeChanged(
+          isInPip: entered,
+          isRestored: restored,
+          position: restored ? position : null,
+          playerId: playerId,
+        ),
+      );
+    }
   }
 
   final _onPipModeChangedController =
@@ -231,31 +356,26 @@ class VideoPlayerPip {
   final _onPipErrorController = StreamController<String>.broadcast();
 
   Future<dynamic> _handleMethodCall(MethodCall call) async {
+    if (_disposed) {
+      return;
+    }
     switch (call.method) {
       case 'nativeLog':
         final String message = call.arguments as String;
         debugPrint('[NATIVE PiP] $message');
         break;
       case 'pipModeChanged':
-        final bool isInPipMode = call.arguments['isInPipMode'] as bool;
-        _onPipModeChangedController.add(PipModeChanged(isInPip: isInPipMode));
+        final Map<Object?, Object?>? args =
+            call.arguments as Map<Object?, Object?>?;
+        _nativeModeChanged(args, entered: args?['isInPipMode'] == true);
         break;
       case 'onPipRestore':
         // Unified into the main state stream: PiP is stopping and the user
-        // asked to restore the full-screen UI. Carry the native AVPlayer
+        // asked to restore the full-screen UI. Carry the native player
         // position so playback can resume exactly where it was left.
         final Map<Object?, Object?>? args =
             call.arguments as Map<Object?, Object?>?;
-        final int? positionMs = args?['positionMs'] as int?;
-        _onPipModeChangedController.add(
-          PipModeChanged(
-            isInPip: false,
-            isRestored: true,
-            position: positionMs != null
-                ? Duration(milliseconds: positionMs)
-                : null,
-          ),
-        );
+        _nativeModeChanged(args, entered: false, restored: true);
         break;
       case 'pipError':
         final String errorMessage = call.arguments['error'] as String;
@@ -272,6 +392,13 @@ class VideoPlayerPip {
   /// Call this when you're done using PiP to free up resources.
   /// Typically called in the `dispose` method of your StatefulWidget.
   void dispose() {
+    if (_disposed) {
+      return;
+    }
+    _disposed = true;
+    _commandGeneration++;
+    _publishOwner(null);
+    pipPlayerId.removeListener(_onOwnerChanged);
     if (!_onPipModeChangedController.isClosed) {
       _onPipModeChangedController.close();
     }
@@ -279,5 +406,8 @@ class VideoPlayerPip {
       _onPipErrorController.close();
     }
     _channel.setMethodCallHandler(null);
+    if (identical(_instance, this)) {
+      _instance = null;
+    }
   }
 }

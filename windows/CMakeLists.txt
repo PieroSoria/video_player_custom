@@ -10,5 +10,5 @@ target_compile_definitions(${PLUGIN_NAME} PRIVATE FLUTTER_PLUGIN_IMPL NOMINMAX)
 target_include_directories(${PLUGIN_NAME} INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin)
 # Windows Media Foundation (decode) + WASAPI (audio) + COM (PropVariant).
-target_link_libraries(${PLUGIN_NAME} PRIVATE mfplat mfuuid mf mfreadwrite ole32)
+target_link_libraries(${PLUGIN_NAME} PRIVATE mfplat mfuuid mf mfreadwrite ole32 user32 gdi32 winhttp)
 set(video_player_custom_bundled_libraries "" PARENT_SCOPE)

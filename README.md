@@ -6,13 +6,16 @@
 
 A Flutter video player for Android, iOS, macOS, Windows, Linux and web.
 
+Requires Flutter 3.47+ and Dart 3.13+. Material widgets are imported from
+`package:material_ui/material_ui.dart`.
+
 | Platform | Playback backend | Picture-in-Picture |
 |----------|------------------|--------------------|
 | Android SDK 24+ | Vendored Media3 | Android 8+ with device support |
 | iOS 15+ | Shared AVFoundation | Supported devices, using `VideoViewType.platformView` |
 | macOS 12+ | Shared AVFoundation | Native PiP with `VideoViewType.platformView` |
-| Windows | media_kit | Compact, always-on-top application window |
-| Linux | media_kit / libmpv | Not implemented |
+| Windows | Windows Media Foundation + WASAPI | Separate native, always-on-top window |
+| Linux | GStreamer | Not implemented |
 | Web | HTML video | Not implemented |
 
 Flutter registers the correct backend automatically. Import
@@ -27,8 +30,8 @@ Unsupported PiP operations return `false`; `reset()` completes without error.
 - `android/`: native playback and PiP, registered together.
 - `darwin/video_player_custom/`: a shared Swift package for iOS and macOS;
   platform-specific PiP sources are conditionally compiled.
-- Windows and Linux use the native playback plugins supplied by `media_kit`.
-  `windows/` adds native window management for Windows PiP. The platform folders
+- `windows/` bundles native playback with Media Foundation and WASAPI, plus
+  a Win32 PiP window; `linux/` bundles native GStreamer playback. The platform folders
   inside `example/` are the application runners and are required to build it.
 
 ### iOS Picture-in-Picture
@@ -86,31 +89,43 @@ has no attached, sized layer, so it cannot exercise the floating PiP window.
 
 ### Windows and Linux
 
-The [media_kit desktop backend](https://pub.dev/packages/video_player_media_kit)
-and its native dependency packages are included in this
-package. Linux additionally requires libmpv and the GTK/OpenGL development
-libraries. On Ubuntu, install `libmpv-dev libgtk-3-dev libepoxy-dev` along with
-Flutter's Linux build prerequisites. Windows requires Flutter's Visual Studio
+The desktop backends are implemented inside this package without `media_kit`.
+Windows uses the operating system's Media Foundation and WASAPI libraries.
+Linux requires GStreamer core/app development libraries and runtime codec
+plugins, along with Flutter's Linux build prerequisites.
+Windows requires Flutter's Visual Studio
 C++ desktop toolchain. Build and test each desktop app on its own operating
 system. Advanced track selection and view options depend on backend support.
+Windows sources using custom `httpHeaders` must provide `Content-Length`;
+the native WinHTTP byte stream preserves those headers during seeks.
 
 ### Windows Picture-in-Picture
 
-Use `await controller.enterPipMode(width: 360, height: 240)` after initialization
-while a `VideoPlayer(controller)` is mounted beneath a Navigator/Overlay (as in
-`MaterialApp`). The plugin turns the existing application window into a compact,
-movable, resizable, always-on-top player. It displays only the video and
-play/pause and restore controls. This is a compact mode for the application
-window, not a separate second window; the original screen stays mounted.
-Playback uses the same media_kit player, preserving its position and audio.
+Use `await controller.enterPipMode(width: 360, height: 240)` after initializing
+the controller.
+The plugin opens a separate, movable, resizable, always-on-top Win32 window
+with restore and close controls. Hovering over the video shows centered
+10-second rewind, play/pause and 10-second forward buttons and a bottom seek
+bar with playback time. Click or drag the bar to choose a position; paused
+seeks update the picture without starting playback. The playback controls
+hide 2.5 seconds after the cursor leaves the video and remain visible during
+a seek drag. Seeking is disabled for sources with an unknown duration.
+Frames come from the same native
+player, preserving playback position and audio. The original application
+window remains usable. Its owning `VideoPlayer` displays a “Picture in Picture”
+message until PiP closes; other videos remain visible. The inline widget can
+be unmounted while its controller stays alive. PiP renders complete frames
+through an offscreen buffer and uses smooth scaling when resized.
 
-Call `controller.exitPipMode()` or use the restore control to restore the original
-window placement, maximized state and always-on-top setting. The native close
-and maximize buttons also restore the application while in PiP. Removing the
-video widget, disposing its controller, or calling `VideoPlayerPip.reset()` exits
-PiP. Only one player may use PiP at a time. The default texture view works on
+Call `controller.exitPipMode()` to close PiP and continue inline playback.
+The restore control raises the source application and reports the playback
+position through `onPipModeChanged`; use `resumeWithPosition` to resume it.
+Closing PiP or calling `VideoPlayerPip.reset()` pauses its source. Disposing
+the owning controller closes PiP immediately; disposing another controller
+does not affect it. Only one player may use PiP at a time; reentering with
+the same controller is idempotent. The default texture view works on
 Windows; `VideoViewType.platformView` is not required. Dimensions are outer-window
-pixels, clamped to the monitor work area with a minimum size of 160 by 120.
+pixels, clamped to the monitor work area with a minimum size of 180 by 120.
 
 The example player's PiP button exercises this flow. Run the Windows integration
 checks from `example/`:
@@ -120,8 +135,8 @@ flutter test integration_test/windows_video_player_test.dart -d windows
 flutter build windows --release
 ```
 
-Apple builds use Swift Package Manager for this plugin and CocoaPods for
-dependencies that have not yet adopted Swift Package Manager.
+Apple builds use Swift Package Manager for this plugin's native AVFoundation
+backend. The plugin does not depend on `media_kit` or CocoaPods.
 The vendored Apple modules use the `video_player_custom_avfoundation` prefix,
 Objective-C symbols use `VPC`, and platform channels have package-specific
 names to avoid collisions with the official `video_player_avfoundation` package.
@@ -337,6 +352,11 @@ final controller = VideoPlayerController.networkUrl(
 ```
 
 - On a **cache hit**, `initialize()` plays the local file directly (no network).
+- **Windows**: cached MP4 files are decoded directly by Media Foundation,
+  including files whose paths contain spaces or Unicode characters. Cache
+  keys may be URLs or arbitrary strings; incompatible filenames are mapped
+  to stable, safe names. Manifest caching does not add decoder support for
+  HLS, DASH or Smooth Streaming to a platform's native backend.
 - On a **cache miss**, it streams from the network as usual while the file is
   downloaded in the background for the next time. Downloads are streamed to
   disk in chunks, so device memory is not saturated even for large files.
@@ -352,7 +372,8 @@ final controller = VideoPlayerController.networkUrl(
   from a `file://` path, so on those platforms the cached presentation is
   served to the player over an in-process loopback HTTP server
   (`http://127.0.0.1:<port>/...`) — offline playback works the same. Single
-  files (MP4, MKV, ...) play directly from disk everywhere. If the backend
+  files play directly from disk when their format is supported by the native
+  backend. If the backend
   blocks cleartext HTTP, add `NSAllowsLocalNetworking` under
   `NSAppTransportSecurity` in `Info.plist`. For cached HLS, the player's
   forward buffer is derived from the playlist's own segment duration (about
@@ -362,7 +383,7 @@ final controller = VideoPlayerController.networkUrl(
 - **Live**: pass `isLive: true` and the source never reads or writes the cache,
   even when that `cacheKey` already has a saved copy
   (a manifest snapshot goes stale in seconds). Live manifests themselves
-  (dynamic DASH, DVR/Smooth Streaming) are also rejected by the downloaders
+  (HLS without `EXT-X-ENDLIST`, dynamic DASH, DVR/Smooth Streaming) are also rejected by the downloaders
   and keep streaming live.
 - **Web (`kIsWeb`)** never caches: the disk cache is desktop/mobile only.
 

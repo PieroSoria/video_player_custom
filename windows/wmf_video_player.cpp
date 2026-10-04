@@ -16,13 +16,17 @@
 #include <flutter/standard_method_codec.h>
 
 #include <Mfobjects.h>
+#include <mferror.h>
 #include <propidl.h>
+#include <winhttp.h>
+#include <wrl/implements.h>
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -62,6 +66,264 @@ std::wstring WideFromUtf8(const std::string& utf8) {
                       result.data(), size);
   return result;
 }
+
+// Each raster request owns its RGBA bytes until Flutter has uploaded them.
+// The decoder's BGRA ring remains available independently to the GDI PiP view.
+struct TextureFrameSnapshot {
+  std::vector<uint8_t> rgba;
+  FlutterDesktopPixelBuffer pixels = {};
+};
+
+// Media Foundation's URL reader does not expose arbitrary request headers.
+// This seekable WinHTTP stream preserves them on every request, including
+// range requests after seeks. MF still performs all demuxing and decoding.
+class HeaderHttpStream final
+    : public Microsoft::WRL::RuntimeClass<
+          Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
+          IStream> {
+ public:
+  ~HeaderHttpStream() {
+    if (request_) WinHttpCloseHandle(request_);
+    if (connection_) WinHttpCloseHandle(connection_);
+    if (session_) WinHttpCloseHandle(session_);
+  }
+
+  HRESULT Open(const std::wstring& url,
+               const std::map<std::string, std::string>& headers,
+               std::shared_ptr<std::atomic<bool>> cancelled) {
+    cancelled_ = std::move(cancelled);
+    if (Cancelled()) return STG_E_REVERTED;
+    URL_COMPONENTS parts = {};
+    parts.dwStructSize = sizeof(parts);
+    parts.dwHostNameLength = parts.dwUrlPathLength =
+        parts.dwExtraInfoLength = static_cast<DWORD>(-1);
+    if (!WinHttpCrackUrl(url.c_str(), 0, 0, &parts)) return LastError();
+    if (parts.nScheme != INTERNET_SCHEME_HTTP &&
+        parts.nScheme != INTERNET_SCHEME_HTTPS) return E_INVALIDARG;
+    secure_ = parts.nScheme == INTERNET_SCHEME_HTTPS;
+    path_.assign(parts.lpszUrlPath, parts.dwUrlPathLength);
+    path_.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
+    if (path_.empty()) path_ = L"/";
+    const size_t fragment = path_.find(L'#');
+    if (fragment != std::wstring::npos) path_.resize(fragment);
+    for (const auto& [name, header_value] : headers) {
+      if (name.empty() || name.find_first_of("\r\n:") != std::string::npos ||
+          header_value.find_first_of("\r\n") != std::string::npos ||
+          name.find('\0') != std::string::npos ||
+          header_value.find('\0') != std::string::npos) return E_INVALIDARG;
+      // The decoder controls byte ranges and must receive uncompressed bytes.
+      if (_stricmp(name.c_str(), "Range") == 0 ||
+          _stricmp(name.c_str(), "Accept-Encoding") == 0) continue;
+      headers_ += WideFromUtf8(name + ": " + header_value + "\r\n");
+    }
+    headers_ += L"Accept-Encoding: identity\r\n";
+    session_ = WinHttpOpen(L"video_player_custom/1.0",
+                          WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                          WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session_) return LastError();
+    WinHttpSetTimeouts(session_, 5000, 5000, 5000, 5000);
+    const std::wstring host(parts.lpszHostName, parts.dwHostNameLength);
+    connection_ = WinHttpConnect(session_, host.c_str(), parts.nPort, 0);
+    if (!connection_) return LastError();
+    return OpenRequest(0);
+  }
+
+  const std::wstring& content_type() const { return content_type_; }
+
+  STDMETHODIMP Read(void* buffer, ULONG count, ULONG* bytes_read) override {
+    if (bytes_read) *bytes_read = 0;
+    if (!buffer && count > 0) return STG_E_INVALIDPOINTER;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (Cancelled()) return STG_E_REVERTED;
+    if (count == 0) return S_OK;
+    if (position_ >= length_) return S_FALSE;
+    if (!request_) {
+      const HRESULT hr = OpenRequest(position_);
+      if (FAILED(hr)) return hr;
+    }
+    ULONG total = 0;
+    const ULONG wanted = static_cast<ULONG>(
+        std::min<uint64_t>(count, length_ - position_));
+    while (total < wanted) {
+      if (Cancelled()) return STG_E_REVERTED;
+      DWORD read = 0;
+      if (!WinHttpReadData(request_, static_cast<BYTE*>(buffer) + total,
+                           wanted - total, &read)) return LastError();
+      if (read == 0) break;
+      total += read;
+      position_ += read;
+    }
+    if (bytes_read) *bytes_read = total;
+    return total == count ? S_OK : S_FALSE;
+  }
+
+  STDMETHODIMP Seek(LARGE_INTEGER offset, DWORD origin,
+                    ULARGE_INTEGER* new_position) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    uint64_t base = 0;
+    if (origin == STREAM_SEEK_CUR) base = position_;
+    else if (origin == STREAM_SEEK_END) base = length_;
+    else if (origin != STREAM_SEEK_SET) return STG_E_INVALIDFUNCTION;
+    const uint64_t magnitude = offset.QuadPart < 0
+        ? static_cast<uint64_t>(-(offset.QuadPart + 1)) + 1
+        : static_cast<uint64_t>(offset.QuadPart);
+    if ((offset.QuadPart < 0 && magnitude > base) ||
+        (offset.QuadPart >= 0 && magnitude >
+            std::numeric_limits<uint64_t>::max() - base))
+      return STG_E_INVALIDFUNCTION;
+    const uint64_t target = offset.QuadPart < 0 ? base - magnitude
+                                              : base + magnitude;
+    if (target != position_) {
+      if (request_) WinHttpCloseHandle(request_);
+      request_ = nullptr;
+      position_ = target;
+    }
+    if (new_position) new_position->QuadPart = position_;
+    return S_OK;
+  }
+
+  STDMETHODIMP Stat(STATSTG* stat, DWORD flags) override {
+    if (!stat) return STG_E_INVALIDPOINTER;
+    std::lock_guard<std::mutex> lock(mutex_);
+    *stat = {};
+    stat->type = STGTY_STREAM;
+    stat->cbSize.QuadPart = length_;
+    stat->grfMode = STGM_READ;
+    if ((flags & STATFLAG_NONAME) == 0) {
+      stat->pwcsName = static_cast<LPOLESTR>(CoTaskMemAlloc(sizeof(wchar_t)));
+      if (!stat->pwcsName) return E_OUTOFMEMORY;
+      stat->pwcsName[0] = L'\0';
+    }
+    return S_OK;
+  }
+
+  STDMETHODIMP CopyTo(IStream* destination, ULARGE_INTEGER count,
+                      ULARGE_INTEGER* read, ULARGE_INTEGER* written) override {
+    if (!destination) return STG_E_INVALIDPOINTER;
+    if (read) read->QuadPart = 0;
+    if (written) written->QuadPart = 0;
+    std::array<BYTE, 65536> buffer;
+    uint64_t remaining = count.QuadPart;
+    while (remaining > 0) {
+      ULONG actual = 0, output = 0;
+      const HRESULT hr = Read(buffer.data(), static_cast<ULONG>(
+          std::min<uint64_t>(remaining, buffer.size())), &actual);
+      if (FAILED(hr)) return hr;
+      if (read) read->QuadPart += actual;
+      const HRESULT write_hr = destination->Write(buffer.data(), actual, &output);
+      if (written) written->QuadPart += output;
+      if (FAILED(write_hr)) return write_hr;
+      if (output != actual) return STG_E_MEDIUMFULL;
+      remaining -= actual;
+      if (hr == S_FALSE || actual == 0) return S_FALSE;
+    }
+    return S_OK;
+  }
+
+  STDMETHODIMP Write(const void*, ULONG, ULONG*) override {
+    return STG_E_ACCESSDENIED;
+  }
+  STDMETHODIMP SetSize(ULARGE_INTEGER) override { return STG_E_ACCESSDENIED; }
+  STDMETHODIMP Commit(DWORD) override { return S_OK; }
+  STDMETHODIMP Revert() override { return STG_E_INVALIDFUNCTION; }
+  STDMETHODIMP LockRegion(ULARGE_INTEGER, ULARGE_INTEGER, DWORD) override {
+    return STG_E_INVALIDFUNCTION;
+  }
+  STDMETHODIMP UnlockRegion(ULARGE_INTEGER, ULARGE_INTEGER, DWORD) override {
+    return STG_E_INVALIDFUNCTION;
+  }
+  STDMETHODIMP Clone(IStream**) override { return E_NOTIMPL; }
+
+ private:
+  static HRESULT LastError() { return HRESULT_FROM_WIN32(GetLastError()); }
+
+  std::wstring Header(DWORD query) const {
+    DWORD bytes = 0;
+    WinHttpQueryHeaders(request_, query, WINHTTP_HEADER_NAME_BY_INDEX,
+                        nullptr, &bytes, WINHTTP_NO_HEADER_INDEX);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) return {};
+    std::wstring header_text(bytes / sizeof(wchar_t), L'\0');
+    if (!WinHttpQueryHeaders(request_, query, WINHTTP_HEADER_NAME_BY_INDEX,
+                             header_text.data(), &bytes, WINHTTP_NO_HEADER_INDEX))
+      return {};
+    header_text.resize(bytes / sizeof(wchar_t));
+    return header_text;
+  }
+
+  HRESULT OpenRequest(uint64_t position) {
+    if (Cancelled()) return STG_E_REVERTED;
+    request_ = WinHttpOpenRequest(connection_, L"GET", path_.c_str(), nullptr,
+        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+        secure_ ? WINHTTP_FLAG_SECURE : 0);
+    if (!request_) return LastError();
+    std::wstring headers = headers_;
+    if (position > 0) headers += L"Range: bytes=" + std::to_wstring(position) +
+                                L"-\r\n";
+    if (!WinHttpSendRequest(request_, headers.c_str(),
+          static_cast<DWORD>(headers.size()), WINHTTP_NO_REQUEST_DATA, 0, 0, 0))
+      return LastError();
+    if (Cancelled()) return STG_E_REVERTED;
+    if (!WinHttpReceiveResponse(request_, nullptr)) return LastError();
+    if (Cancelled()) return STG_E_REVERTED;
+    DWORD status = 0, status_size = sizeof(status);
+    if (!WinHttpQueryHeaders(request_, WINHTTP_QUERY_STATUS_CODE |
+          WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status,
+          &status_size, WINHTTP_NO_HEADER_INDEX)) return LastError();
+    if (status != 200 && status != 206)
+      return HRESULT_FROM_WIN32(ERROR_WINHTTP_INVALID_SERVER_RESPONSE);
+    if (status == 206) {
+      const std::wstring range = Header(WINHTTP_QUERY_CONTENT_RANGE);
+      unsigned long long first = 0, last = 0, total = 0;
+      if (swscanf_s(range.c_str(), L"bytes %llu-%llu/%llu", &first, &last,
+                     &total) != 3 || first != position || total == 0 ||
+          last < first || last != total - 1 ||
+          (length_ != 0 && length_ != total))
+        return HRESULT_FROM_WIN32(ERROR_WINHTTP_INVALID_SERVER_RESPONSE);
+      length_ = total;
+    } else {
+      const std::wstring length = Header(WINHTTP_QUERY_CONTENT_LENGTH);
+      if (length.empty()) return MF_E_UNSUPPORTED_BYTESTREAM_TYPE;
+      wchar_t* end = nullptr;
+      const uint64_t response_length = wcstoull(length.c_str(), &end, 10);
+      if (!end || *end != L'\0' || response_length == 0)
+        return MF_E_UNSUPPORTED_BYTESTREAM_TYPE;
+      if (length_ != 0 && length_ != response_length) return STG_E_READFAULT;
+      length_ = response_length;
+    }
+    if (position == 0) {
+      content_type_ = Header(WINHTTP_QUERY_CONTENT_TYPE);
+      const size_t separator = content_type_.find(L';');
+      if (separator != std::wstring::npos) content_type_.resize(separator);
+    }
+    if (position > 0 && status == 200) {
+      // Servers without range support remain playable: skip bytes until the
+      // requested absolute position while preserving the supplied headers.
+      std::array<BYTE, 65536> discard;
+      uint64_t remaining = position;
+      while (remaining > 0) {
+        if (Cancelled()) return STG_E_REVERTED;
+        DWORD read = 0;
+        if (!WinHttpReadData(request_, discard.data(), static_cast<DWORD>(
+                std::min<uint64_t>(remaining, discard.size())), &read))
+          return LastError();
+        if (read == 0) return STG_E_READFAULT;
+        remaining -= read;
+      }
+    }
+    return S_OK;
+  }
+
+  HINTERNET session_ = nullptr;
+  HINTERNET connection_ = nullptr;
+  HINTERNET request_ = nullptr;
+  std::wstring path_, headers_, content_type_;
+  bool secure_ = false;
+  uint64_t length_ = 0;
+  uint64_t position_ = 0;
+  std::mutex mutex_;
+  std::shared_ptr<std::atomic<bool>> cancelled_;
+  bool Cancelled() const { return cancelled_ && cancelled_->load(); }
+};
 
 std::string HResultToString(HRESULT hr) {
   wchar_t* message = nullptr;
@@ -248,18 +510,24 @@ WmfVideoPlayer::WmfVideoPlayer(
     EventCallback on_event)
     : textures_(std::move(textures)),
       poster_(std::move(poster)),
-      on_event_(std::move(on_event)) {
-  pixel_buffer_.buffer = nullptr;
-  pixel_buffer_.width = 0;
-  pixel_buffer_.height = 0;
-  pixel_buffer_.release_callback = nullptr;
-  pixel_buffer_.release_context = nullptr;
-}
+      on_event_(std::move(on_event)) {}
 
 WmfVideoPlayer::~WmfVideoPlayer() { Dispose(); }
 
-bool WmfVideoPlayer::Initialize(const std::string& url, std::string* error) {
+void WmfVideoPlayer::InitializeAsync(
+    const std::string& url, std::map<std::string, std::string> http_headers,
+    std::function<void(bool, const std::string&)> on_initialized) {
   url_ = url;
+  http_headers_ = std::move(http_headers);
+  on_initialized_ = std::move(on_initialized);
+  pump_thread_ = std::thread([this]() { PumpLoop(); });
+}
+
+bool WmfVideoPlayer::Initialize(
+    const std::string& url, std::string* error,
+    std::map<std::string, std::string> http_headers) {
+  url_ = url;
+  http_headers_ = std::move(http_headers);
   ready_ = false;
   setup_failed_ = false;
   pump_thread_ = std::thread([this]() { PumpLoop(); });
@@ -281,6 +549,12 @@ bool WmfVideoPlayer::Initialize(const std::string& url, std::string* error) {
 
 void WmfVideoPlayer::Dispose() {
   if (dispose_started_.exchange(true)) return;
+  // Cancel pending platform notifications immediately, before waiting for
+  // the decoder to stop. Their captures may outlive the plugin registrar.
+  disposed_ = true;
+  http_cancelled_->store(true);
+  ready_ = false;
+  playing_ = false;
   PostCommand(Command{CommandType::kDispose});
   if (pump_thread_.joinable()) pump_thread_.join();
 }
@@ -291,6 +565,10 @@ void WmfVideoPlayer::Pause() { PostCommand(Command{CommandType::kPause}); }
 
 void WmfVideoPlayer::SeekTo(int64_t position_ms) {
   PostCommand(Command{CommandType::kSeek, position_ms});
+}
+
+void WmfVideoPlayer::SeekBy(int64_t offset_ms) {
+  PostCommand(Command{CommandType::kSeekBy, offset_ms});
 }
 
 void WmfVideoPlayer::SetLooping(bool looping) { looping_ = looping; }
@@ -347,7 +625,9 @@ void WmfVideoPlayer::Emit(PlayerEvent event) {
   // its own thread. Holding |self| keeps the player alive until the task runs.
   auto self = shared_from_this();
   poster_->Post(
-      [self, event]() { if (self->on_event_) self->on_event_(event); });
+      [self, event]() {
+        if (!self->disposed_ && self->on_event_) self->on_event_(event);
+      });
 }
 
 void WmfVideoPlayer::PumpLoop() {
@@ -385,6 +665,15 @@ void WmfVideoPlayer::PumpLoop() {
     ready_cv_.notify_all();
   }
 
+  if (on_initialized_) {
+    auto self = shared_from_this();
+    auto callback = std::move(on_initialized_);
+    const std::string error = setup_error_;
+    poster_->Post([self, callback = std::move(callback), error]() {
+      if (!self->disposed_) callback(self->ready_.load(), error);
+    });
+  }
+
   while (!disposed_) {
     Command command = PopCommand();
     if (command.type == CommandType::kDispose) break;
@@ -408,13 +697,27 @@ void WmfVideoPlayer::PumpLoop() {
         }
         break;
       case CommandType::kSeek:
+      case CommandType::kSeekBy: {
         audio_.Stop();
-        DoSeek(command.position_ms);
+        int64_t target = command.position_ms;
+        if (command.type == CommandType::kSeekBy) {
+          const int64_t current = std::max<int64_t>(0, GetPositionMs());
+          const int64_t offset = command.position_ms;
+          // Saturate before adding; DoSeek applies the media duration limit.
+          if (offset >= 0) {
+            const int64_t maximum = std::numeric_limits<int64_t>::max();
+            target = current > maximum - offset ? maximum : current + offset;
+          } else {
+            target = offset < -current ? 0 : current + offset;
+          }
+        }
+        DoSeek(target);
         if (playing_) {
           audio_.Start();
           first_video_frame_ = true;
         }
         break;
+      }
       case CommandType::kSetVolume:
         audio_.SetVolume(command.volume);
         break;
@@ -448,8 +751,31 @@ bool WmfVideoPlayer::SetupMedia(std::string* error) {
   attributes->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING,
                         TRUE);
 
-  hr = MFCreateSourceReaderFromURL(WideFromUtf8(url_).c_str(),
-                                   attributes.Get(), &reader_);
+  if (!http_headers_.empty() &&
+      (_strnicmp(url_.c_str(), "http://", 7) == 0 ||
+       _strnicmp(url_.c_str(), "https://", 8) == 0)) {
+    auto http_stream = Microsoft::WRL::Make<HeaderHttpStream>();
+    hr = http_stream ? http_stream->Open(WideFromUtf8(url_), http_headers_,
+                                          http_cancelled_)
+                     : E_OUTOFMEMORY;
+    ComPtr<IMFByteStream> stream;
+    if (SUCCEEDED(hr)) hr = MFCreateMFByteStreamOnStream(http_stream.Get(), &stream);
+    if (SUCCEEDED(hr)) {
+      ComPtr<IMFAttributes> stream_attributes;
+      if (SUCCEEDED(stream.As(&stream_attributes))) {
+        stream_attributes->SetString(MF_BYTESTREAM_ORIGIN_NAME,
+                                      WideFromUtf8(url_).c_str());
+        if (!http_stream->content_type().empty())
+          stream_attributes->SetString(MF_BYTESTREAM_CONTENT_TYPE,
+                                        http_stream->content_type().c_str());
+      }
+      hr = MFCreateSourceReaderFromByteStream(stream.Get(), attributes.Get(),
+                                               &reader_);
+    }
+  } else {
+    hr = MFCreateSourceReaderFromURL(WideFromUtf8(url_).c_str(),
+                                     attributes.Get(), &reader_);
+  }
   if (FAILED(hr)) {
     *error = "Unable to open the media source: " + HResultToString(hr);
     return false;
@@ -552,7 +878,7 @@ bool WmfVideoPlayer::SetupMedia(std::string* error) {
         static_cast<int64_t>(std::max<int32_t>(stride < 0 ? -stride : stride,
                                                static_cast<int32_t>(width * 4)));
 
-    const int64_t buffer_bytes = frame_byte_stride_ * video_height_;
+    const int64_t buffer_bytes = video_width_ * 4 * video_height_;
     for (FrameSlot& slot : frame_slots_) {
       slot.data.resize(static_cast<size_t>(buffer_bytes));
       slot.width = video_width_;
@@ -598,15 +924,27 @@ bool WmfVideoPlayer::SetupMedia(std::string* error) {
       flutter::PixelBufferTexture(
           [this](size_t /*width*/,
                  size_t /*height*/) -> const FlutterDesktopPixelBuffer* {
-            std::lock_guard<std::mutex> lock(frame_mutex_);
-            const size_t slot =
-                (frame_slot_index_ - 1 + kFrameSlots) % kFrameSlots;
-            const FrameSlot& frame = frame_slots_[slot];
-            pixel_buffer_.buffer =
-                frame.data.empty() ? nullptr : frame.data.data();
-            pixel_buffer_.width = frame.width;
-            pixel_buffer_.height = frame.height;
-            return &pixel_buffer_;
+            auto snapshot = std::make_unique<TextureFrameSnapshot>();
+            {
+              std::lock_guard<std::mutex> lock(frame_mutex_);
+              if (frame_generation_.load() == 0) return nullptr;
+              const size_t slot =
+                  (frame_slot_index_ - 1 + kFrameSlots) % kFrameSlots;
+              const FrameSlot& frame = frame_slots_[slot];
+              if (frame.data.empty()) return nullptr;
+              snapshot->rgba = frame.data;
+              snapshot->pixels.width = static_cast<size_t>(frame.width);
+              snapshot->pixels.height = static_cast<size_t>(frame.height);
+            }
+            // Flutter's PixelBufferTexture uploads GL_RGBA; WMF/GDI use BGRA.
+            for (size_t offset = 0; offset < snapshot->rgba.size(); offset += 4)
+              std::swap(snapshot->rgba[offset], snapshot->rgba[offset + 2]);
+            snapshot->pixels.buffer = snapshot->rgba.data();
+            snapshot->pixels.release_context = snapshot.get();
+            snapshot->pixels.release_callback = [](void* context) {
+              delete static_cast<TextureFrameSnapshot*>(context);
+            };
+            return &snapshot.release()->pixels;
           }));
   texture_id_ = textures_->RegisterTexture(texture_.get());
   if (texture_id_ < 0) {
@@ -680,27 +1018,7 @@ void WmfVideoPlayer::ReadPlayStep() {
     ReadVideoSample(&video_sample, &video_eof, &type_changed);
     const int64_t elapsed_ms = NowMs() - start_ms;
 
-    if (type_changed) {
-      // The output media type changed; resize buffers and re-notify.
-      ComPtr<IMFMediaType> actual_type;
-      if (SUCCEEDED(
-              reader_->GetCurrentMediaType(video_stream_, &actual_type))) {
-        UINT32 width = 0, height = 0;
-        MFGetAttributeSize(actual_type.Get(), MF_MT_FRAME_SIZE, &width,
-                           &height);
-        if (width > 0 && height > 0) {
-          std::lock_guard<std::mutex> lock(frame_mutex_);
-          video_width_ = width;
-          video_height_ = height;
-          const int64_t buffer_bytes = frame_byte_stride_ * height;
-          for (FrameSlot& slot : frame_slots_) {
-            slot.data.resize(static_cast<size_t>(buffer_bytes));
-            slot.width = width;
-            slot.height = height;
-          }
-        }
-      }
-    }
+    if (type_changed) RefreshVideoOutput();
     if (video_eof) {
       video_eof_ = true;
     }
@@ -720,6 +1038,9 @@ void WmfVideoPlayer::ReadPlayStep() {
       LONGLONG pts = 0;
       video_sample->GetSampleTime(&pts);
       const int64_t pts_ms = static_cast<int64_t>(pts / 10000);
+      // WMF may seek to an earlier keyframe. Decode that preroll without
+      // publishing old frames or moving the reported position backwards.
+      if (pts_ms < seek_target_ms_) return;
       position_ms_ = pts_ms;
 
       if (has_video_stream_audio_deadline(has_audio)) {
@@ -735,8 +1056,10 @@ void WmfVideoPlayer::ReadPlayStep() {
     }
   }
 
-  // Audio-only media: keep decoding until the end is reached.
-  if (!has_video && has_audio && !audio_eof_) {
+  // Drain any audio tail after the last video frame as well as audio-only
+  // media. Otherwise a seek to the duration can leave video EOF waiting for
+  // audio EOF forever, without delivering the completion event.
+  if ((!has_video || video_eof_) && has_audio && !audio_eof_) {
     WriteOneAudioSample();
   }
 
@@ -782,6 +1105,7 @@ bool WmfVideoPlayer::WriteOneAudioSample() {
     return false;
   }
   if (!audio_sample) return false;
+  if (timestamp / 10000 < seek_target_ms_) return true;
 
   ComPtr<IMFMediaBuffer> media_buffer;
   if (FAILED(audio_sample->ConvertToContiguousBuffer(&media_buffer))) {
@@ -815,6 +1139,31 @@ bool WmfVideoPlayer::ReadVideoSample(ComPtr<IMFSample>* sample,
   *type_changed = (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) != 0;
   *end_of_stream = (flags & MF_SOURCE_READERF_ENDOFSTREAM) != 0;
   return true;
+}
+
+void WmfVideoPlayer::RefreshVideoOutput() {
+  // Both playback and a paused seek can change the decoder output format.
+  ComPtr<IMFMediaType> actual_type;
+  if (FAILED(reader_->GetCurrentMediaType(video_stream_, &actual_type))) return;
+  UINT32 width = 0, height = 0;
+  MFGetAttributeSize(actual_type.Get(), MF_MT_FRAME_SIZE, &width, &height);
+  if (width == 0 || height == 0) return;
+
+  std::lock_guard<std::mutex> lock(frame_mutex_);
+  video_width_ = width;
+  video_height_ = height;
+  UINT32 stride_raw = 0;
+  actual_type->GetUINT32(MF_MT_DEFAULT_STRIDE, &stride_raw);
+  const int32_t stride = static_cast<int32_t>(stride_raw);
+  bottom_up_ = stride < 0;
+  frame_byte_stride_ = std::max<int64_t>(
+      std::abs(static_cast<int64_t>(stride)), video_width_ * 4);
+  const int64_t buffer_bytes = video_width_ * 4 * height;
+  for (FrameSlot& slot : frame_slots_) {
+    slot.data.resize(static_cast<size_t>(buffer_bytes));
+    slot.width = width;
+    slot.height = height;
+  }
 }
 
 void WmfVideoPlayer::PresentPaced(const ComPtr<IMFSample>& sample, LONGLONG pts) {
@@ -864,7 +1213,7 @@ bool WmfVideoPlayer::ConvertSampleToFrame(const ComPtr<IMFSample>& sample,
   FrameSlot& frame = frame_slots_[slot];
   frame.width = video_width_;
   frame.height = video_height_;
-  const int64_t row_bytes = frame_byte_stride_;
+  const int64_t row_bytes = video_width_ * 4;
   if (frame.data.size() != static_cast<size_t>(row_bytes * video_height_)) {
     frame.data.resize(static_cast<size_t>(row_bytes * video_height_));
   }
@@ -874,13 +1223,23 @@ bool WmfVideoPlayer::ConvertSampleToFrame(const ComPtr<IMFSample>& sample,
     BYTE* data = nullptr;
     LONG pitch = 0;
     if (FAILED(buffer_2d->Lock2D(&data, &pitch))) return false;
-    CopyRowsToFrame(data, std::abs(static_cast<int64_t>(pitch)), &frame);
+    // Lock2D returns the top scanline and a signed pitch. A negative pitch
+    // must be followed as-is; its pointer is already adjusted by the buffer.
+    CopyRowsToFrame(data, pitch, &frame);
     buffer_2d->Unlock2D();
   } else {
     BYTE* data = nullptr;
     DWORD length = 0;
     if (FAILED(media_buffer->Lock(&data, nullptr, &length))) return false;
-    CopyRowsToFrame(data, row_bytes, &frame);
+    const int64_t source_bytes = frame_byte_stride_ * video_height_;
+    if (static_cast<int64_t>(length) < source_bytes) {
+      media_buffer->Unlock();
+      return false;
+    }
+    CopyRowsToFrame(bottom_up_ ? data +
+                        (video_height_ - 1) * frame_byte_stride_ : data,
+                    bottom_up_ ? -frame_byte_stride_ : frame_byte_stride_,
+                    &frame);
     media_buffer->Unlock();
   }
   return true;
@@ -889,12 +1248,16 @@ bool WmfVideoPlayer::ConvertSampleToFrame(const ComPtr<IMFSample>& sample,
 void WmfVideoPlayer::CopyRowsToFrame(const BYTE* src, int64_t src_stride,
                                      FrameSlot* frame) {
   const int64_t height = video_height_;
-  const int64_t row_bytes = frame_byte_stride_;
+  const int64_t row_bytes = video_width_ * 4;
   if (height <= 0 || row_bytes <= 0 || !src) return;
   for (int64_t row = 0; row < height; ++row) {
-    const int64_t src_row = bottom_up_ ? height - 1 - row : row;
-    memcpy(frame->data.data() + row * row_bytes, src + src_row * src_stride,
+    BYTE* destination = frame->data.data() + row * row_bytes;
+    memcpy(destination, src + row * src_stride,
            static_cast<size_t>(row_bytes));
+    // MFVideoFormat_RGB32's fourth byte is undefined; Flutter needs opaque
+    // alpha for the same pixels rendered by the GDI PiP window.
+    for (int64_t column = 0; column < video_width_; ++column)
+      destination[column * 4 + 3] = 255;
   }
 }
 
@@ -911,26 +1274,72 @@ void WmfVideoPlayer::HandleEndOfStream() {
 }
 
 void WmfVideoPlayer::DoSeek(int64_t position_ms) {
-  if (position_ms < 0) position_ms = 0;
+  if (!reader_ || !ready_.load() || disposed_.load()) return;
+  const int64_t safe_maximum = std::numeric_limits<int64_t>::max() / 10000;
+  const int64_t maximum = duration_ms_ > 0
+                              ? std::min(duration_ms_, safe_maximum)
+                              : safe_maximum;
+  position_ms = std::clamp<int64_t>(position_ms, 0, maximum);
   PROPVARIANT position;
   PropVariantInit(&position);
   position.vt = VT_I8;
   position.hVal.QuadPart = position_ms * 10000;
-  if (reader_) {
-    reader_->SetCurrentPosition(GUID_NULL, position);
-    reader_->Flush(video_stream_ == static_cast<DWORD>(-1)
-                       ? static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS)
-                       : video_stream_);
-  }
+  const HRESULT seek_result = reader_->SetCurrentPosition(GUID_NULL, position);
   PropVariantClear(&position);
+  if (FAILED(seek_result)) {
+    Emit(PlayerEvent{PlayerEvent::Type::kError, 0, 0, 0, false,
+                     HResultToString(seek_result)});
+    return;
+  }
+  reader_->Flush(static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS));
 
   video_eof_ = video_stream_ == static_cast<DWORD>(-1);
   audio_eof_ = audio_stream_ == static_cast<DWORD>(-1);
   first_video_frame_ = true;
   was_buffering_ = false;
-  last_audio_pts_ms_ = 0;
+  last_audio_pts_ms_ = position_ms;
+  seek_target_ms_ = position_ms;
   position_ms_ = position_ms;
   audio_.ResetClock();
+
+  if (playing_.load() || video_eof_) return;
+  // Seeking a paused player must update its picture without briefly playing
+  // audio or publishing a play/pause state change. Decode the keyframe preroll
+  // on this pump thread, then present the first frame at or after the target.
+  ComPtr<IMFSample> preview;
+  while (!disposed_.load()) {
+    {
+      std::lock_guard<std::mutex> lock(command_mutex_);
+      if (!commands_.empty() &&
+          (commands_.front().type == CommandType::kSeek ||
+           commands_.front().type == CommandType::kSeekBy)) {
+        return;  // A newer seek will produce the requested preview instead.
+      }
+    }
+    ComPtr<IMFSample> sample;
+    bool end_of_stream = false;
+    bool type_changed = false;
+    if (!ReadVideoSample(&sample, &end_of_stream, &type_changed)) return;
+    if (type_changed) RefreshVideoOutput();
+    if (disposed_.load()) return;
+    if (sample) {
+      LONGLONG timestamp = 0;
+      if (SUCCEEDED(sample->GetSampleTime(&timestamp))) {
+        preview = sample;
+        if (timestamp / 10000 >= position_ms) {
+          PresentFrame(preview);
+          return;
+        }
+      }
+    }
+    if (end_of_stream) {
+      video_eof_ = true;
+      // An exact seek to the duration has no later frame. Keep the last valid
+      // image while the play head remains at the requested end position.
+      if (preview) PresentFrame(preview);
+      return;
+    }
+  }
 }
 
 bool WmfVideoPlayer::CopyCurrentFrame(std::vector<uint8_t>* data,
@@ -945,7 +1354,7 @@ bool WmfVideoPlayer::CopyCurrentFrame(std::vector<uint8_t>* data,
   *data = frame.data;
   *width = frame.width;
   *height = frame.height;
-  *stride = frame_byte_stride_;
+  *stride = frame.width * 4;
   return true;
 }
 

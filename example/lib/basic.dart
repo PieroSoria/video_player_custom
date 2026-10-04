@@ -10,7 +10,7 @@
 // #docregion basic-example
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:video_player_custom/video_player_custom.dart';
 
 void main() => runApp(const VideoApp());

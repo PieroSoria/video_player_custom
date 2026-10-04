@@ -4,7 +4,7 @@
 
 import 'dart:collection';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:video_player_custom/video_player.dart';
 
 /// A demo page that showcases audio track functionality.

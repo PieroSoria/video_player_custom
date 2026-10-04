@@ -8,7 +8,7 @@
 /// video.
 library;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:video_player_custom/video_player_custom.dart';
 
 import 'audio_tracks_demo.dart';

@@ -8,13 +8,14 @@ import 'dart:math' as math show max;
 
 import 'package:collection/collection.dart' as collection;
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player_platform_interface/video_player_platform_interface.dart'
     as platform_interface;
 
 import 'src/closed_caption_file.dart';
 import 'src/cache/video_player_cache.dart';
+import 'src/pip/pip_state.dart';
 
 export 'package:video_player_platform_interface/video_player_platform_interface.dart'
     show
@@ -129,6 +130,7 @@ VideoAudioTrack _convertPlatformAudioTrack(platform_interface.VideoAudioTrack pl
 }
 
 platform_interface.VideoPlayerPlatform? _lastVideoPlayerPlatform;
+final Expando<bool> _disposedVideoPlayerControllers = Expando<bool>();
 
 platform_interface.VideoPlayerPlatform get _videoPlayerPlatform {
   final platform_interface.VideoPlayerPlatform currentInstance =
@@ -729,6 +731,29 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     _lifeCycleObserver?.initialize();
     _creatingCompleter = Completer<void>();
 
+    try {
+      await _initialize();
+    } catch (error) {
+      releasePipPlayer(_playerId);
+      // Native desktop creation can fail before an event stream exists. Let
+      // dispose() finish even when opening the source never produced a player.
+      if (!_creatingCompleter!.isCompleted) {
+        _creatingCompleter!.complete();
+      }
+      _lifeCycleObserver?.dispose();
+      _lifeCycleObserver = null;
+      if (!_isDisposed) {
+        value = VideoPlayerValue.erroneous(
+          error is PlatformException
+              ? error.message ?? error.code
+              : error.toString(),
+        );
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _initialize() async {
     final platform_interface.DataSource dataSourceDescription;
     switch (dataSourceType) {
       case platform_interface.DataSourceType.asset:
@@ -768,6 +793,13 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
 
     _playerId =
         (await _videoPlayerPlatform.createWithOptions(creationOptions)) ?? kUninitializedPlayerId;
+    if (_playerId == kUninitializedPlayerId) {
+      throw PlatformException(
+        code: 'video_player',
+        message: 'The platform did not create a video player.',
+      );
+    }
+    registerPipPlayer(_playerId);
     _creatingCompleter!.complete(null);
     final initializingCompleter = Completer<void>();
 
@@ -839,6 +871,7 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     }
 
     void errorListener(Object obj) {
+      releasePipPlayer(_playerId);
       final e = obj as PlatformException;
       value = VideoPlayerValue.erroneous(e.message!);
       _timer?.cancel();
@@ -858,14 +891,19 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     if (_isDisposed) {
       return;
     }
+    _disposedVideoPlayerControllers[this] = true;
+    releasePipPlayer(_playerId);
 
     if (_creatingCompleter != null) {
       await _creatingCompleter!.future;
       if (!_isDisposed) {
+        releasePipPlayer(_playerId);
         _isDisposed = true;
         _timer?.cancel();
         await _eventSubscription?.cancel();
-        await _videoPlayerPlatform.dispose(_playerId);
+        if (_playerId != kUninitializedPlayerId) {
+          await _videoPlayerPlatform.dispose(_playerId);
+        }
       }
       _lifeCycleObserver?.dispose();
     }
@@ -1330,6 +1368,8 @@ class VideoPlayer extends StatefulWidget {
   /// initializing or buffering. When [errorBuilder] is provided it is shown
   /// when [VideoPlayerValue.hasError] is true; otherwise the defaults (a black
   /// frame while loading and a centered error box) are used.
+  /// Windows shows a "Picture in Picture" placeholder while this controller
+  /// owns the native PiP window.
   const VideoPlayer(
     this.controller, {
     super.key,
@@ -1375,6 +1415,16 @@ class _VideoPlayerState extends State<VideoPlayer> {
 
   @override
   Widget build(BuildContext context) {
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
+      return ValueListenableBuilder<int?>(
+        valueListenable: pipPlayerId,
+        builder: (context, owner, child) => _buildPlayer(context),
+      );
+    }
+    return _buildPlayer(context);
+  }
+
+  Widget _buildPlayer(BuildContext context) {
     return ValueListenableBuilder<VideoPlayerValue>(
       valueListenable: widget.controller,
       builder: (context, value, child) => _buildContent(context, value),
@@ -1382,7 +1432,27 @@ class _VideoPlayerState extends State<VideoPlayer> {
   }
 
   Widget _buildContent(BuildContext context, VideoPlayerValue value) {
+    if (_disposedVideoPlayerControllers[widget.controller] == true) {
+      return const SizedBox.shrink();
+    }
     final int playerId = widget.controller.playerId;
+
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows &&
+        pipPlayerId.value == playerId) {
+      return const ColoredBox(
+        color: Colors.black,
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Icon(Icons.picture_in_picture_alt, color: Colors.white, size: 36),
+              SizedBox(height: 12),
+              Text('Picture in Picture', style: TextStyle(color: Colors.white)),
+            ],
+          ),
+        ),
+      );
+    }
 
     if (value.hasError) {
       final VideoPlayerErrorBuilder? errorBuilder = widget.errorBuilder;

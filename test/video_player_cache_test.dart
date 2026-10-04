@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart' show Uint8List;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:video_player_custom/video_player.dart';
 import 'package:video_player_platform_interface/video_player_platform_interface.dart';
@@ -260,6 +260,67 @@ void main() {
     expect(receivedToken, 'abc123');
   });
 
+  test(
+    'cache keys are safe filenames on Windows and survive reopening',
+    () async {
+      final List<int> body = utf8.encode('cached-video');
+      final HttpServer server = await serve(body);
+      addTearDown(server.close);
+      final String url = uri(server);
+      final Set<String> paths = <String>{};
+      final List<String> keys = <String>[
+        'https://example.com/video?id=123',
+        'episode/one',
+        r'episode\two',
+        '../outside',
+        'CON',
+        'NUL.mp4',
+        'trailing.',
+        '',
+        List<String>.filled(260, 'a').join(),
+      ];
+
+      for (final String key in keys) {
+        await cache.prefetch(url, cacheKey: key);
+        final File? file = await cache.fileFor(url, cacheKey: key);
+        expect(file, isNotNull, reason: 'key: $key');
+        expect(file!.parent.absolute.uri, tempDir.absolute.uri);
+        expect(await file.readAsBytes(), body);
+        expect(paths.add(file.path), isTrue, reason: 'keys remain distinct');
+
+        final VideoPlayerCache reopened = VideoPlayerCache(tempDir);
+        final File? recovered = await reopened.fileFor(
+          'http://different-origin.example/clip.mp4',
+          cacheKey: key,
+        );
+        expect(recovered?.path, file.path, reason: 'same key after reopening');
+      }
+    },
+  );
+
+  test(
+    'manifest cache keys use the same safe name for HTTP playback',
+    () async {
+      final HlsFixture fixture = await serveHls();
+      addTearDown(fixture.server.close);
+      const String key = 'playlist:/episode?token=abc';
+      await cache.prefetch(fixture.masterUrl, cacheKey: key);
+
+      final File? master = await cache.fileFor(
+        fixture.masterUrl,
+        cacheKey: key,
+      );
+      expect(master, isNotNull);
+      expect(master!.parent.parent.absolute.uri, tempDir.absolute.uri);
+      final Uri? served = await cache.serveManifestHttp(
+        fixture.masterUrl,
+        cacheKey: key,
+      );
+      expect(served, isNotNull);
+      expect(await readLocalMedia(served!), await master.readAsBytes());
+    },
+  );
+
   test('download failure leaves no partial file behind', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     server.listen((request) {
@@ -318,6 +379,72 @@ void main() {
     // Oldest entry was evicted to stay under the 2 KiB budget (3 x 1 KiB).
     expect(await small.have(url, cacheKey: 'first'), isFalse);
   });
+
+  test(
+    'eviction preserves a manifest while its segments are downloading',
+    () async {
+      final Completer<void> secondSegmentRequested = Completer<void>();
+      final Completer<void> releaseSecondSegment = Completer<void>();
+      final HttpServer server = await HttpServer.bind(
+        InternetAddress.loopbackIPv4,
+        0,
+      );
+      addTearDown(server.close);
+      addTearDown(() {
+        if (!releaseSecondSegment.isCompleted) {
+          releaseSecondSegment.complete();
+        }
+      });
+      server.listen((HttpRequest request) async {
+        if (request.uri.path.endsWith('.m3u8')) {
+          request.response.write('''#EXTM3U
+#EXT-X-TARGETDURATION:1
+#EXTINF:1,
+first.ts
+#EXTINF:1,
+second.ts
+#EXT-X-ENDLIST
+''');
+        } else {
+          if (request.uri.path.endsWith('second.ts')) {
+            secondSegmentRequested.complete();
+            await releaseSecondSegment.future;
+          }
+          request.response.add(List<int>.filled(1024, 7));
+        }
+        await request.response.close();
+      });
+      final VideoPlayerCache small = VideoPlayerCache(
+        tempDir,
+        maxCacheSizeBytes: 1024,
+      );
+      final Future<void> downloading = small.prefetch(
+        uri(server, path: '/master.m3u8'),
+        cacheKey: 'downloading',
+      );
+      final Future<Object?> downloadResult = downloading.then<Object?>(
+        (_) => null,
+        onError: (Object error) => error,
+      );
+      await secondSegmentRequested.future;
+      final Directory entry = Directory('${tempDir.path}/downloading');
+      for (final File file in entry.listSync().whereType<File>()) {
+        await file.setLastModified(DateTime(2000));
+      }
+
+      await small.prefetch(uri(server), cacheKey: 'finished');
+      expect(
+        await entry.exists(),
+        isTrue,
+        reason: 'incomplete presentations must not be evicted',
+      );
+      expect(await small.have(uri(server), cacheKey: 'finished'), isTrue);
+
+      releaseSecondSegment.complete();
+      expect(await downloadResult, isNull);
+      expect(await small.totalSizeBytes(), lessThanOrEqualTo(1024));
+    },
+  );
 
   test('hash-derived key is stable and extension is preserved', () async {
     final body = Uint8List.fromList(utf8.encode('x'));
@@ -909,6 +1036,22 @@ seg.ts
       expect(await cache.have(url, cacheKey: 'live', formatHint: format),
           isFalse);
     }
+  });
+  test('live HLS media playlists are never cached', () async {
+    final HttpServer server = await serve(
+      utf8.encode('''#EXTM3U
+#EXT-X-TARGETDURATION:4
+#EXTINF:4,
+segment.ts
+'''),
+    );
+    addTearDown(server.close);
+    final String url = uri(server, path: '/live.m3u8');
+    await expectLater(
+      cache.prefetch(url, cacheKey: 'live-hls'),
+      throwsA(isA<FormatException>()),
+    );
+    expect(await cache.have(url, cacheKey: 'live-hls'), isFalse);
   });
 }
 

@@ -25,8 +25,9 @@ import 'smooth_streaming_downloader.dart';
 ///   * Smooth Streaming (`formatHint: VideoFormat.ss` or `Manifest` URLs) —
 ///     the manifest and every video/audio fragment are downloaded and the
 ///     manifest is rewritten to local files.
-///   * Live manifests (dynamic DASH, DVR/Smooth Streaming) are never cached,
-///     and neither are sources opened with `isLive: true` on the controller.
+///   * Live manifests (HLS without `EXT-X-ENDLIST`, dynamic DASH,
+///     DVR/Smooth Streaming) are never cached, and neither are sources opened
+///     with `isLive: true` on the controller.
 ///
 /// Note: manifest playback from the cached local files requires a player that
 /// accepts `file://` HLS/DASH presentations (e.g. ExoPlayer on Android). On
@@ -44,8 +45,9 @@ import 'smooth_streaming_downloader.dart';
 class VideoPlayerCache {
   /// Creates a cache backed by [_cacheDirectory].
   ///
-  /// [maxCacheSizeBytes] bounds the total on-disk size using an LRU policy
-  /// (oldest entries are removed first). Pass a negative value for no limit.
+  /// [maxCacheSizeBytes] bounds completed entries using an LRU policy (oldest
+  /// entries are removed first). Downloads in progress are preserved, so their
+  /// temporary bytes can exceed the limit. Pass a negative value for no limit.
   VideoPlayerCache(this._cacheDirectory,
       {this.maxCacheSizeBytes = 1 << 30});
 
@@ -66,16 +68,17 @@ class VideoPlayerCache {
 
   /// The cached file for [uri], or `null` when it is not cached yet.
   ///
-  /// Uses [cacheKey] as the entry name when provided; otherwise a stable hash
-  /// of [uri]. Touches the file so LRU eviction keeps it longer. For HLS,
-  /// DASH and Smooth Streaming the returned file is the rewritten local
-  /// master manifest/playlist.
+  /// Uses [cacheKey] as the entry name when provided; keys that cannot safely
+  /// name a file on Windows are mapped to a stable hash. Otherwise uses a
+  /// stable hash of [uri]. Touches the file so LRU eviction keeps it longer.
+  /// For HLS, DASH and Smooth Streaming the returned file is the rewritten
+  /// local master manifest/playlist.
   Future<File?> fileFor(
     String uri, {
     String? cacheKey,
     VideoFormat? formatHint,
   }) async {
-    final String key = cacheKey ?? _hash(uri);
+    final String key = _storageKey(uri, cacheKey);
     final String? manifestExt = manifestExtension(uri, formatHint);
     if (manifestExt != null) {
       final File master = _manifestMaster(key, manifestExt);
@@ -176,7 +179,7 @@ class VideoPlayerCache {
     if (ext == null) {
       return null;
     }
-    final String key = cacheKey ?? _hash(uri);
+    final String key = _storageKey(uri, cacheKey);
     final File master = _manifestMaster(key, ext);
     if (!await master.exists()) {
       return null;
@@ -200,7 +203,7 @@ class VideoPlayerCache {
     Map<String, String>? headers,
     VideoFormat? formatHint,
   }) {
-    final String key = cacheKey ?? _hash(uri);
+    final String key = _storageKey(uri, cacheKey);
     final String? manifestExt = manifestExtension(uri, formatHint);
     final String hitKey = manifestExt != null
         ? _manifestMaster(key, manifestExt).path
@@ -347,6 +350,9 @@ class VideoPlayerCache {
         entries =
         <({FileSystemEntity entity, int size, DateTime modified})>[];
     await for (final FileSystemEntity entity in _cacheDirectory.list()) {
+      if (await _isDownloading(entity)) {
+        continue;
+      }
       entries.add(
         (
           entity: entity,
@@ -366,9 +372,26 @@ class VideoPlayerCache {
       }
       total -= entry.size;
       try {
-        _deleteQuietly(entry.entity);
+        await _deleteQuietly(entry.entity);
       } catch (_) {}
     }
+  }
+
+  Future<bool> _isDownloading(FileSystemEntity entity) async {
+    if (entity is File && entity.path.endsWith('.part')) {
+      return _prefetching.containsKey(
+        entity.path.substring(0, entity.path.length - '.part'.length),
+      );
+    }
+    if (entity is Directory) {
+      final String prefix = '${entity.path}${Platform.pathSeparator}';
+      for (final String target in _prefetching.keys.toList()) {
+        if (target.startsWith(prefix) && !await File(target).exists()) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   Future<int> _entrySize(FileSystemEntity entity) async {
@@ -476,6 +499,27 @@ class VideoPlayerCache {
       hash = (hash * prime) & 0xFFFFFFFFFFFFFFFF;
     }
     return hash.toRadixString(16).padLeft(16, '0');
+  }
+
+  static String _storageKey(String uri, String? cacheKey) {
+    if (cacheKey == null) {
+      return _hash(uri);
+    }
+    // Preserve existing simple entry names, while preventing path separators,
+    // traversal, device names and characters rejected by Windows filenames.
+    final String stem = cacheKey.split('.').first.toUpperCase();
+    final bool reserved = RegExp(
+      r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$',
+    ).hasMatch(stem);
+    if (!reserved &&
+        RegExp(r'^[a-zA-Z0-9_][a-zA-Z0-9_. -]{0,99}$').hasMatch(cacheKey) &&
+        !cacheKey.endsWith('.') &&
+        !cacheKey.endsWith(' ')) {
+      return cacheKey;
+    }
+    // '~' is valid on Windows but excluded from raw keys above, so hashed
+    // names cannot collide with any retained simple key.
+    return 'key~${_hash(cacheKey)}';
   }
 
   static String _extensionOf(Uri? uri) {
