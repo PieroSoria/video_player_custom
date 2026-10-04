@@ -332,11 +332,13 @@ class AVFoundationVideoPlayer extends VideoPlayerPlatform {
 
     final Widget view = defaultTargetPlatform == TargetPlatform.macOS
         ? AppKitView(
+            key: ValueKey(playerId),
             viewType: 'plugins.flutter.dev/video_player_custom_ios',
             creationParams: creationParams,
             creationParamsCodec: AVFoundationVideoPlayerApi.pigeonChannelCodec,
           )
         : UiKitView(
+            key: ValueKey(playerId),
             viewType: 'plugins.flutter.dev/video_player_custom_ios',
             creationParams: creationParams,
             creationParamsCodec: AVFoundationVideoPlayerApi.pigeonChannelCodec,

@@ -7,8 +7,10 @@ import FlutterMacOS
 final class MacVideoPlayerPipPlugin: NSObject, AVPictureInPictureControllerDelegate {
   private let channel: FlutterMethodChannel
   private let layerProvider: (Int64) -> AVPlayerLayer?
+  private let pausePlayer: (Int64) -> Void
   private let restoreWindow: () -> Void
   private var controller: AVPictureInPictureController?
+  private var sourcePlayer: AVPlayer?
   private var playerId: Int64?
   private var pendingStart: FlutterResult?
   private var readiness: NSKeyValueObservation?
@@ -17,9 +19,11 @@ final class MacVideoPlayerPipPlugin: NSObject, AVPictureInPictureControllerDeleg
   private var restoring = false
   private var exitingFromApp = false
 
-  init(registrar: FlutterPluginRegistrar, layerProvider: @escaping (Int64) -> AVPlayerLayer?) {
+  init(registrar: FlutterPluginRegistrar, layerProvider: @escaping (Int64) -> AVPlayerLayer?,
+       pausePlayer: @escaping (Int64) -> Void) {
     channel = FlutterMethodChannel(name: "video_player_pip", binaryMessenger: registrar.messenger)
     self.layerProvider = layerProvider
+    self.pausePlayer = pausePlayer
     self.restoreWindow = { [weak view = registrar.view] in
       view?.window?.makeKeyAndOrderFront(nil)
       NSApp.activate(ignoringOtherApps: true)
@@ -62,6 +66,7 @@ final class MacVideoPlayerPipPlugin: NSObject, AVPictureInPictureControllerDeleg
     }
     clear()
     controller = pip
+    sourcePlayer = layer.player
     playerId = id
     pendingStart = result
     pip.delegate = self
@@ -117,6 +122,7 @@ final class MacVideoPlayerPipPlugin: NSObject, AVPictureInPictureControllerDeleg
     timeout?.cancel(); timeout = nil
     controller?.delegate = nil
     controller = nil
+    sourcePlayer = nil
     playerId = nil
     resetting = false
     restoring = false
@@ -139,23 +145,49 @@ final class MacVideoPlayerPipPlugin: NSObject, AVPictureInPictureControllerDeleg
 
   func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
     guard controller === pictureInPictureController else { return }
-    // Closing the floating window cancels playback. Restoring the inline view
-    // or stopping PiP through the API keeps the existing playback state.
-    if !restoring && !exitingFromApp && !resetting {
-      pictureInPictureController.playerLayer.player?.pause()
-    }
-    channel.invokeMethod("pipModeChanged", arguments: ["isInPipMode": false])
-    finishStart(false)
+    let shouldRestore = restoring && !exitingFromApp && !resetting
+    let seconds = sourcePlayer?.currentTime().seconds ?? 0
+    // A system stop ends playback on the source, including a restore that may
+    // create a new Flutter controller. Update the wrapper's playback intent so
+    // buffering callbacks cannot restart the old AVPlayer.
+    if !exitingFromApp && !resetting { pauseSource() }
+    logStop("didStop restore=\(shouldRestore)")
     clear()
+    finishStart(false)
+    if shouldRestore {
+      channel.invokeMethod("onPipRestore", arguments: ["positionMs": seconds.isFinite ? Int64(max(0, seconds) * 1000) : 0])
+    } else {
+      channel.invokeMethod("pipModeChanged", arguments: ["isInPipMode": false])
+    }
+  }
+
+  private func pauseSource() {
+    if let playerId { pausePlayer(playerId) }
+    // Keep the exact source available even if the native view is detached.
+    sourcePlayer?.pause()
+  }
+
+  private func logStop(_ phase: String) {
+    #if DEBUG
+      channel.invokeMethod("nativeLog", arguments: "Mac PiP \(phase) player=\(playerId ?? -1) rate=\(sourcePlayer?.rate ?? -1) appExit=\(exitingFromApp) reset=\(resetting)")
+    #endif
+  }
+
+  func pictureInPictureControllerWillStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+    guard controller === pictureInPictureController else { return }
+    if !exitingFromApp && !resetting { pauseSource() }
+    logStop("willStop")
   }
 
   func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController,
                                   restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
     guard controller === pictureInPictureController, !resetting else { completionHandler(false); return }
     restoring = true
-    let seconds = pictureInPictureController.playerLayer.player?.currentTime().seconds ?? 0
+    if !exitingFromApp { pauseSource() }
+    logStop("restore")
     restoreWindow()
-    channel.invokeMethod("onPipRestore", arguments: ["positionMs": seconds.isFinite ? Int64(max(0, seconds) * 1000) : 0])
+    // Notify Flutter after didStop, when the old player is paused and PiP has
+    // released its state. Navigation can then reuse or replace the controller.
     completionHandler(true)
   }
 

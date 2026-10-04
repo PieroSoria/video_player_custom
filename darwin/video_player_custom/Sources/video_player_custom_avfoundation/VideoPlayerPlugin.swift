@@ -98,6 +98,9 @@ public final class VideoPlayerPlugin: NSObject, FlutterPlugin, AVFoundationVideo
     #elseif os(macOS)
       instance.macPip = MacVideoPlayerPipPlugin(registrar: registrar, layerProvider: { [weak factory] id in
         factory?.playerLayer(for: id)
+      }, pausePlayer: { [weak instance] id in
+        var error: FlutterError?
+        instance?.playersByIdentifier[id]?.pauseWithError(&error)
       })
     #endif
 

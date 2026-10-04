@@ -8,6 +8,7 @@ environment:
   flutter: ">=3.44.0"
 
 dependencies:
+  video_player_platform_interface: ^6.9.0
   flutter:
     sdk: flutter
   video_player_custom:

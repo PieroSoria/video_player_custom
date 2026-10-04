@@ -46,7 +46,12 @@ class _VideoAppState extends State<VideoApp> {
   @override
   void initState() {
     super.initState();
-    _pipSubscription = VideoPlayerPip.instance.onPipModeChanged.listen((event) {
+    _pipSubscription = VideoPlayerPip.instance.onPipModeChanged.listen((
+      event,
+    ) async {
+      if (event.isRestored && mounted) {
+        await VideoPlayerPip.resumeWithPosition(_controller, event.position);
+      }
       if (mounted) {
         setState(
           () => _pipStatus = event.isInPip ? 'PiP activo' : 'PiP cerrado',
@@ -109,8 +114,10 @@ class _VideoAppState extends State<VideoApp> {
                   : _controller.play();
             });
           },
-          child: Icon(
-            _controller.value.isPlaying ? Icons.pause : Icons.play_arrow,
+          child: ValueListenableBuilder<VideoPlayerValue>(
+            valueListenable: _controller,
+            builder: (_, value, _) =>
+                Icon(value.isPlaying ? Icons.pause : Icons.play_arrow),
           ),
         ),
       ),

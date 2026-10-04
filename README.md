@@ -47,8 +47,17 @@ the source controller ends its PiP session, so keep the controller alive while
 PiP is active. Run `flutter run -d macos -t lib/basic.dart` inside `example/` to
 try the PiP button.
 
-Closing the native PiP window pauses both video and audio. Using its restore
-button or calling `exitPipMode()` returns to inline playback without pausing.
+Closing the native PiP window pauses both video and audio. The restore button
+also pauses the source player before emitting a single restore event, so a
+replacement screen cannot overlap its audio with the old player. Reuse the
+source controller where possible, then call
+`VideoPlayerPip.resumeWithPosition(controller, event.position)` on restore.
+Calling `exitPipMode()` from the app preserves inline playback.
+
+To check close and restoration with a replacement controller, run
+`flutter run -d macos -t lib/pip_handoff_check.dart` from `example/`. The check
+keeps the old controller alive and changes its native playback speed to verify
+that it stays paused while the replacement plays.
 
 Entry and exit were verified in the visible macOS example. The integration test
 covers support queries, reset and rejection of texture views; its native view
