@@ -31,6 +31,27 @@ Unsupported PiP operations return `false`; `reset()` completes without error.
   `windows/` adds native window management for Windows PiP. The platform folders
   inside `example/` are the application runners and are required to build it.
 
+### iOS Picture-in-Picture
+
+Use `VideoViewType.platformView`, set
+`videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true)`, enable
+the audio background mode, and keep the source controller alive while PiP is
+active. Otherwise Flutter's lifecycle observer pauses playback in the background
+and may automatically resume the old controller on return. Closing PiP pauses
+its source video and audio. Restoring also pauses the source before emitting a single
+restore event with its position; reuse that controller or resume a replacement
+with `VideoPlayerPip.resumeWithPosition(controller, event.position)`.
+
+Disposing a controller only resets PiP when that controller owns the session.
+`reset()` pauses and releases the current PiP source without clearing its video
+item or deactivating the audio session shared with other players. A source kept
+alive during PiP must be disposed by its owner when it is no longer needed.
+
+Run `flutter run -d <physical-iphone-id> -t lib/pip_handoff_check.dart` from
+`example/` to verify native close and restore with a replacement controller.
+Add `--dart-define=PIP_HIDE_SOURCE=true` to also test removing the inline view
+while retaining its controller during PiP.
+
 ### macOS Picture-in-Picture
 
 Create the controller with `viewType: VideoViewType.platformView` and keep its

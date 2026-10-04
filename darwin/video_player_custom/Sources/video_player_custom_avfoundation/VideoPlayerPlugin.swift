@@ -69,7 +69,9 @@ public final class VideoPlayerPlugin: NSObject, FlutterPlugin, AVFoundationVideo
   private let assetProvider: VPCAssetProvider
   private var nextPlayerIdentifier: Int64 = 1
   var playersByIdentifier: [Int64: VPCVideoPlayer] = [:]
-  #if os(macOS)
+  #if os(iOS)
+    private var iosPip: VideoPlayerPipPlugin?
+  #elseif os(macOS)
     private var macPip: MacVideoPlayerPipPlugin?
   #endif
 
@@ -92,8 +94,11 @@ public final class VideoPlayerPlugin: NSObject, FlutterPlugin, AVFoundationVideo
     )
     registrar.register(factory, withId: "plugins.flutter.dev/video_player_custom_ios")
     #if os(iOS)
-      VideoPlayerPipPlugin.register(with: registrar, playerLayerProvider: { [weak factory] id in
+      instance.iosPip = VideoPlayerPipPlugin.register(with: registrar, playerLayerProvider: { [weak factory] id in
         factory?.playerLayer(for: id)
+      }, pausePlayer: { [weak instance] id in
+        var error: FlutterError?
+        instance?.playersByIdentifier[id]?.pauseWithError(&error)
       })
     #elseif os(macOS)
       instance.macPip = MacVideoPlayerPipPlugin(registrar: registrar, layerProvider: { [weak factory] id in
@@ -143,7 +148,10 @@ public final class VideoPlayerPlugin: NSObject, FlutterPlugin, AVFoundationVideo
   }
 
   public func detachFromEngine(for registrar: FlutterPluginRegistrar) {
-    #if os(macOS)
+    #if os(iOS)
+      iosPip?.reset()
+      iosPip = nil
+    #elseif os(macOS)
       macPip?.reset()
       macPip = nil
     #endif
@@ -274,7 +282,9 @@ public final class VideoPlayerPlugin: NSObject, FlutterPlugin, AVFoundationVideo
 
     player.onDisposed = { [weak self] in
       guard let strongSelf = self else { return }
-      #if os(macOS)
+      #if os(iOS)
+        strongSelf.iosPip?.reset(playerId: playerId)
+      #elseif os(macOS)
         strongSelf.macPip?.reset(playerId: playerId)
       #endif
       SetUpVPCVideoPlayerInstanceApiWithSuffix(strongSelf.binaryMessenger, nil, channelSuffix)

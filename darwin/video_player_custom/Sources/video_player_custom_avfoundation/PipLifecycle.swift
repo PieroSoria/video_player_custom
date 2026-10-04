@@ -32,7 +32,7 @@ extension VideoPlayerPipPlugin {
     // state and races without benefit. Background playback is granted by the
     // `UIBackgroundModes` (audio + video) declared in Info.plist.
     if let player = pipPlayer {
-      let reason = String(describing: player.reasonForWaitingToPlay ?? .noItemToPlay)
+      let reason = player.reasonForWaitingToPlay.map { String(describing: $0) } ?? "none"
       pipLog("VideoPlayerPip: BG player state: status=\(player.status.rawValue) tcs=\(player.timeControlStatus.rawValue) rate=\(player.rate) reason=\(reason) error=\(player.error?.localizedDescription ?? "none")")
     }
   }

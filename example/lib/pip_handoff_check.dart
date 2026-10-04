@@ -1,4 +1,5 @@
-// Manual macOS regression check: use the native PiP close and restore buttons.
+// Manual Apple regression check: use the native PiP close and restore buttons.
+// PIP_HIDE_SOURCE=true also simulates navigating away from the original view.
 // ignore_for_file: invalid_use_of_visible_for_testing_member
 import 'dart:async';
 
@@ -22,11 +23,13 @@ class _PipHandoffCheckState extends State<PipHandoffCheck> {
   StreamSubscription<PipModeChanged>? _subscription;
   String _status = 'Open PiP, then use its close or restore button';
   bool _checking = false;
+  bool _sourceHidden = false;
 
   VideoPlayerController _createController() {
     final controller = VideoPlayerController.asset(
       'assets/Butterfly-209.mp4',
       viewType: VideoViewType.platformView,
+      videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
     );
     _controllers.add(controller);
     return controller;
@@ -57,12 +60,12 @@ class _PipHandoffCheckState extends State<PipHandoffCheck> {
     var before = await source.position;
     await Future<void>.delayed(const Duration(seconds: 1));
     var after = await source.position;
-    // AVKit may finish a pending backward seek when returning the layer.
+    // AVKit may finish a pending seek when returning the layer.
     // Verify the clock remains stationary after that seek has completed.
     if (!source.value.isPlaying &&
         before != null &&
         after != null &&
-        after < before) {
+        (after - before).inMilliseconds.abs() > 100) {
       before = after;
       await Future<void>.delayed(const Duration(seconds: 1));
       after = await source.position;
@@ -89,7 +92,10 @@ class _PipHandoffCheckState extends State<PipHandoffCheck> {
         final replacement = _createController();
         await VideoPlayerPip.resumeWithPosition(replacement, event.position);
         await replacement.setLooping(true);
-        setState(() => _controller = replacement);
+        setState(() {
+          _controller = replacement;
+          _sourceHidden = false;
+        });
         // Keep the source alive while the new video plays to detect overlap.
         await _expectPaused(source);
         await source.dispose();
@@ -99,7 +105,12 @@ class _PipHandoffCheckState extends State<PipHandoffCheck> {
           ? 'PASS: replacement playing, previous player paused'
           : 'PASS: close stopped video and audio';
       debugPrint(result);
-      if (mounted) setState(() => _status = result);
+      if (mounted) {
+        setState(() {
+          _status = result;
+          _sourceHidden = false;
+        });
+      }
     } catch (error) {
       debugPrint('FAIL: $error');
       if (mounted) setState(() => _status = 'FAIL: $error');
@@ -112,13 +123,20 @@ class _PipHandoffCheckState extends State<PipHandoffCheck> {
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(title: Text(_status)),
     body: Center(
-      child: SizedBox(width: 640, height: 360, child: VideoPlayer(_controller)),
+      child: _sourceHidden
+          ? const Text('Source view removed while PiP is active')
+          : SizedBox(width: 640, height: 360, child: VideoPlayer(_controller)),
     ),
     floatingActionButton: FloatingActionButton.extended(
       onPressed: () async {
         if (_checking || !_controller.value.isInitialized) return;
         await _controller.play();
-        await _controller.enterPipMode();
+        final entered = await _controller.enterPipMode();
+        if (entered &&
+            mounted &&
+            const bool.fromEnvironment('PIP_HIDE_SOURCE')) {
+          setState(() => _sourceHidden = true);
+        }
       },
       label: const Text('Open PiP'),
       icon: const Icon(Icons.picture_in_picture_alt),

@@ -9,12 +9,19 @@ public class VideoPlayerPipPlugin: NSObject, FlutterPlugin, AVPictureInPictureCo
 
   var channel: FlutterMethodChannel?
   var playerLayerProvider: (Int64) -> AVPlayerLayer? = { _ in nil }
+  var pausePlayer: (Int64) -> Void = { _ in }
+  var playerId: Int64?
+  var restoring = false
+  var exitingFromApp = false
+  var resetting = false
+  var startingPip = false
+  var stoppingPip = false
+  var startTimeout: DispatchWorkItem?
   var pipController: AVPictureInPictureController?
   var isInPipMode = false
   var observationToken: NSKeyValueObservation?
   var pipCompletion: FlutterResult?
-  /// The AVPlayer currently used by the PiP controller, kept so we can resume it
-  /// if the system (or another plugin) pauses it while in background PiP.
+  /// Retain the exact source even if navigation removes its inline layer.
   var pipPlayer: AVPlayer?
 
   // MARK: - Flutter bridging
@@ -46,15 +53,18 @@ public class VideoPlayerPipPlugin: NSObject, FlutterPlugin, AVPictureInPictureCo
     register(with: registrar, playerLayerProvider: { _ in nil })
   }
 
-  static func register(
+  @discardableResult static func register(
     with registrar: FlutterPluginRegistrar,
-    playerLayerProvider: @escaping (Int64) -> AVPlayerLayer?
-  ) {
+    playerLayerProvider: @escaping (Int64) -> AVPlayerLayer?,
+    pausePlayer: @escaping (Int64) -> Void = { _ in }
+  ) -> VideoPlayerPipPlugin {
     let channel = FlutterMethodChannel(name: "video_player_pip", binaryMessenger: registrar.messenger())
     let instance = VideoPlayerPipPlugin(channel: channel)
     instance.playerLayerProvider = playerLayerProvider
+    instance.pausePlayer = pausePlayer
     registrar.addMethodCallDelegate(instance, channel: channel)
     instance.pipLog("VideoPlayerPip: Plugin registered")
+    return instance
   }
 
   init(channel: FlutterMethodChannel) {
@@ -114,54 +124,19 @@ public class VideoPlayerPipPlugin: NSObject, FlutterPlugin, AVPictureInPictureCo
     return false
   }
 
-  /// Fully resets PiP state: releases the controller, invalidates observers,
-  /// clears the retained player, deactivates the audio session and resets the
-  /// PiP flag. Safe to call any time (idempotent). Exposed to Flutter via the
-  /// `reset` method call.
-  func reset() {
-    let hadController = pipController != nil
-    let hadPlayer = pipPlayer != nil
-
-    pipLog("VideoPlayerPip: reset() called — cleaning video + audio state")
-
-    // 0) Force-stop the AVPlayer we know about. This is the SAME instance
-    //    video_player created (we captured it from the AVPlayerLayer), so pausing
-    //    it and emptying its item kills both the inline playback and any residual
-    //    audio, no matter which module "owns" it. Without this, the player can
-    //    keep sounding after its view is gone (audio with no image).
-    if let player = pipPlayer {
-      let rate = player.rate
-      let tcs = player.timeControlStatus.rawValue
-      let hasItem = player.currentItem != nil
-      pipLog("VideoPlayerPip: reset() known player BEFORE stop: rate=\(rate) tcs=\(tcs) hasItem=\(hasItem)")
-      player.pause()
-      player.replaceCurrentItem(with: nil)
-      pipLog("VideoPlayerPip: known player paused + currentItem cleared (audio should stop now)")
+  /// Stop only this session's source. Never clear its item or deactivate the
+  /// shared audio session, which another screen may already be using.
+  func reset(playerId id: Int64? = nil) {
+    if let id, id != playerId { return }
+    if resetting { return }
+    resetting = true
+    pauseSource()
+    finishStart(false)
+    if let pipController, pipController.isPictureInPictureActive || isInPipMode {
+      pipController.stopPictureInPicture()
     } else {
-      pipLog("VideoPlayerPip: reset() had NO retained player reference — audio (if any) comes from another module")
+      cleanupPipController()
     }
-
-    // 1) Video / PiP machinery
-    cleanupPipController()
-
-    // 2) Audio session: deactivate it so it doesn't stay in .playback and
-    //    block/duck other apps' audio after leaving the video screen.
-    do {
-      let session = AVAudioSession.sharedInstance()
-      if session.category == .playback {
-        try session.setActive(false, options: [.notifyOthersOnDeactivation])
-        pipLog("VideoPlayerPip: Audio session deactivated (was .playback) — audio cleaned")
-      } else {
-        pipLog("VideoPlayerPip: Audio session left untouched (category=\(session.category.rawValue), active=\(session.isOtherAudioPlaying ? "other app playing" : "\(session.isInputAvailable)"))")
-      }
-    } catch {
-      pipLog("VideoPlayerPip: Audio session deactivation note: \(error)")
-    }
-
-    isInPipMode = false
-    pipCompletion = nil
-
-    pipLog("VideoPlayerPip: reset() done — video(PiP controller)=\(hadController ? "cleaned" : "none"), player=\(hadPlayer ? "cleaned" : "none")")
   }
 
   deinit {

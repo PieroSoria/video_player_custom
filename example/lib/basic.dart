@@ -63,6 +63,7 @@ class _VideoAppState extends State<VideoApp> {
         'https://flutter.github.io/assets-for-api-docs/assets/videos/bee.mp4',
       ),
       viewType: VideoViewType.platformView,
+      videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
     );
     _initializeVideo();
   }
