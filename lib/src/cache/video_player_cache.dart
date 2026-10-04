@@ -436,29 +436,21 @@ class VideoPlayerCache {
   /// `null` for plain media files. Detection combines the [formatHint] with
   /// the URL shape.
   static String? manifestExtension(String uri, VideoFormat? formatHint) {
-    if (formatHint == VideoFormat.hls || _isHlsUri(uri)) {
+    // Tokens and fragments are not part of the media filename.
+    final String path = Uri.tryParse(uri)?.path.toLowerCase() ?? '';
+    if (formatHint == VideoFormat.hls ||
+        path.endsWith('.m3u8') || path.endsWith('.m3u')) {
       return '.m3u8';
     }
-    if (formatHint == VideoFormat.dash || _isDashUri(uri)) {
+    if (formatHint == VideoFormat.dash || path.endsWith('.mpd')) {
       return '.mpd';
     }
-    if (formatHint == VideoFormat.ss || _isSsUri(uri)) {
+    if (formatHint == VideoFormat.ss ||
+        path.endsWith('.ism') || path.endsWith('/manifest') ||
+        path.contains('.ism/')) {
       return '.ism';
     }
     return null;
-  }
-
-  static bool _isHlsUri(String uri) {
-    final String lower = uri.toLowerCase();
-    return lower.endsWith('.m3u8') || lower.endsWith('.m3u');
-  }
-
-  static bool _isDashUri(String uri) => uri.toLowerCase().endsWith('.mpd');
-
-  static bool _isSsUri(String uri) {
-    final String lower = uri.toLowerCase();
-    return lower.endsWith('.ism') || lower.endsWith('/manifest') ||
-        lower.contains('.ism/');
   }
 
   static Future<void> _deleteQuietly(FileSystemEntity entity) async {

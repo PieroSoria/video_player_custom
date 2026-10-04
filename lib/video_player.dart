@@ -638,6 +638,7 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
         final Uri? overHttp = await VideoPlayerCache.instance.serveManifestHttp(
           uri,
           cacheKey: cacheKey,
+          formatHint: formatHint,
         );
         if (overHttp != null) {
           Uri uriToPlay = overHttp;

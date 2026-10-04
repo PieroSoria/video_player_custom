@@ -42,7 +42,9 @@ void main() {
   String uri(HttpServer server, {String path = '/media/clip.mp4'}) =>
       'http://${server.address.address}:${server.port}$path';
 
-  Future<HlsFixture> serveHls() async {
+  Future<HlsFixture> serveHls({
+    String masterPath = '/media/master.m3u8',
+  }) async {
     final List<int> seg1 = Uint8List.fromList(utf8.encode('segment-one'));
     final List<int> seg2 = Uint8List.fromList(utf8.encode('segment-two'));
     final String master = '''#EXTM3U
@@ -64,7 +66,7 @@ void main() {
         await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     server.listen((HttpRequest request) {
       switch (request.uri.path) {
-        case '/media/master.m3u8':
+        case final String path when path == Uri.parse(masterPath).path:
           request.response.write(master);
         case '/media/variant.m3u8':
           request.response.write(variant);
@@ -81,9 +83,50 @@ void main() {
     }, onError: (_) {});
     return HlsFixture(
       server: server,
-      masterUrl: uri(server, path: '/media/master.m3u8'),
+      masterUrl: uri(server, path: masterPath),
       segments: <List<int>>[seg1, seg2],
     );
+  }
+
+  Future<List<int>> readLocalMedia(Uri source) async {
+    if (source.scheme == 'file') {
+      return File.fromUri(source).readAsBytes();
+    }
+    expect(source.scheme, 'http');
+    expect(source.host, '127.0.0.1');
+    final HttpClient client = HttpClient();
+    try {
+      final HttpClientResponse response = await (await client.getUrl(
+        source,
+      )).close();
+      expect(response.statusCode, HttpStatus.ok);
+      return await response.fold<List<int>>(
+        <int>[],
+        (List<int> bytes, List<int> chunk) => bytes..addAll(chunk),
+      );
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<void> expectCachedManifestSource(
+    DataSource source,
+    File master,
+  ) async {
+    final Uri resolved = Uri.parse(source.uri!);
+    if (Platform.isIOS || Platform.isMacOS) {
+      expect(resolved.scheme, 'http');
+      expect(resolved.host, '127.0.0.1');
+      expect(
+        resolved.path,
+        '/${master.parent.uri.pathSegments.where((String s) => s.isNotEmpty).last}'
+        '/${master.uri.pathSegments.last}',
+      );
+    } else {
+      expect(resolved, master.uri);
+    }
+    expect(source.httpHeaders, isEmpty);
+    expect(await readLocalMedia(resolved), await master.readAsBytes());
   }
 
   Future<DashFixture> serveDash() async {
@@ -357,6 +400,39 @@ void main() {
     await controller.dispose();
   });
 
+  test(
+    'live sources bypass an existing cached entry and preserve headers',
+    () async {
+      final List<int> body = utf8.encode('previously-cached-video');
+      final HttpServer server = await serve(body);
+      addTearDown(server.close);
+      final String url = uri(server);
+      await cache.prefetch(url, cacheKey: 'live-hit');
+      final File? cachedFile = await cache.fileFor(url, cacheKey: 'live-hit');
+      expect(cachedFile, isNotNull);
+
+      final VideoPlayerController controller = VideoPlayerController.networkUrl(
+        Uri.parse(url),
+        cacheKey: 'live-hit',
+        isLive: true,
+        httpHeaders: const <String, String>{
+          'Authorization': 'Bearer live-token',
+        },
+        videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
+      );
+      addTearDown(controller.dispose);
+      await controller.initialize();
+
+      final DataSource sent = fakePlatform.dataSources.last;
+      expect(sent.uri, url);
+      expect(sent.uri, isNot(cachedFile!.uri.toString()));
+      expect(sent.httpHeaders, const <String, String>{
+        'Authorization': 'Bearer live-token',
+      });
+      expect(await cachedFile.readAsBytes(), body);
+    },
+  );
+
   test('HLS prefetch downloads playlists, segments and keys locally',
       () async {
     final HlsFixture fixture = await serveHls();
@@ -442,11 +518,107 @@ void main() {
     );
     await controller2.initialize();
     final DataSource sent = fakePlatform.dataSources.last;
-    expect(sent.uri, startsWith('file:'), reason: 'cached local HLS used');
-    expect(sent.uri, endsWith('/show/master.m3u8'));
-    expect(sent.httpHeaders, isEmpty);
+    final File? master = await cache.fileFor(
+      fixture.masterUrl,
+      cacheKey: 'show',
+      formatHint: VideoFormat.hls,
+    );
+    await expectCachedManifestSource(sent, master!);
     await controller2.dispose();
   });
+
+  for (final ({String name, String masterPath, VideoFormat? formatHint})
+      scenario
+      in <({String name, String masterPath, VideoFormat? formatHint})>[
+        (
+          name: 'HLS URL without an extension and with a format hint',
+          masterPath: '/media/video',
+          formatHint: VideoFormat.hls,
+        ),
+        (
+          name: 'HLS URL with query parameters and no format hint',
+          masterPath: '/media/master.m3u8?token=signed-token',
+          formatHint: null,
+        ),
+      ]) {
+    test(
+      '${scenario.name} reuses the complete cache after origin closes',
+      () async {
+        final HlsFixture fixture = await serveHls(
+          masterPath: scenario.masterPath,
+        );
+        addTearDown(fixture.server.close);
+        final VideoPlayerController first = VideoPlayerController.networkUrl(
+          Uri.parse(fixture.masterUrl),
+          cacheKey: 'offline-hls',
+          formatHint: scenario.formatHint,
+          videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
+        );
+        await first.initialize();
+        expect(fakePlatform.dataSources.last.uri, fixture.masterUrl);
+        await cache.warm(
+          fixture.masterUrl,
+          cacheKey: 'offline-hls',
+          formatHint: scenario.formatHint,
+        );
+        await first.dispose();
+        await fixture.server.close(force: true);
+
+        final File? master = await cache.fileFor(
+          fixture.masterUrl,
+          cacheKey: 'offline-hls',
+          formatHint: scenario.formatHint,
+        );
+        expect(master, isNotNull);
+        expect(master!.uri.pathSegments.last, 'master.m3u8');
+
+        final VideoPlayerController reopened = VideoPlayerController.networkUrl(
+          Uri.parse(fixture.masterUrl),
+          cacheKey: 'offline-hls',
+          formatHint: scenario.formatHint,
+          videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: true),
+        );
+        addTearDown(reopened.dispose);
+        await reopened.initialize();
+        final DataSource source = fakePlatform.dataSources.last;
+        expect(source.uri, isNot(fixture.masterUrl));
+        await expectCachedManifestSource(source, master);
+
+        final Uri localMaster = Uri.parse(source.uri!);
+        final String masterText = utf8.decode(
+          await readLocalMedia(localMaster),
+        );
+        final String variantName = masterText
+            .split('\n')
+            .firstWhere(
+              (String line) => line.isNotEmpty && !line.startsWith('#'),
+            );
+        final Uri localVariant = localMaster.resolve(variantName);
+        final String variantText = utf8.decode(
+          await readLocalMedia(localVariant),
+        );
+        expect(variantText, contains('#EXT-X-ENDLIST'));
+        final List<String> segments = variantText
+            .split('\n')
+            .where((String line) => line.isNotEmpty && !line.startsWith('#'))
+            .toList();
+        expect(segments, hasLength(fixture.segments.length));
+        for (int index = 0; index < segments.length; index++) {
+          expect(
+            await readLocalMedia(localVariant.resolve(segments[index])),
+            fixture.segments[index],
+          );
+        }
+        final String keyName = RegExp(
+          'URI="([^"]+)"',
+        ).firstMatch(variantText)!.group(1)!;
+        expect(
+          utf8.decode(await readLocalMedia(localVariant.resolve(keyName))),
+          '{"kty":"oct","k":"aGVsbG8ta2V5"}',
+        );
+      },
+    );
+  }
 
   test('cached HLS manifest is served over the loopback HTTP server',
       () async {
@@ -630,9 +802,12 @@ seg.ts
     );
     await controller2.initialize();
     final DataSource sent = fakePlatform.dataSources.last;
-    expect(sent.uri, startsWith('file:'), reason: 'cached local DASH used');
-    expect(sent.uri, endsWith('/film/master.mpd'));
-    expect(sent.httpHeaders, isEmpty);
+    final File? master = await cache.fileFor(
+      fixture.masterUrl,
+      cacheKey: 'film',
+      formatHint: VideoFormat.dash,
+    );
+    await expectCachedManifestSource(sent, master!);
     await controller2.dispose();
   });
 
@@ -701,9 +876,12 @@ seg.ts
     );
     await controller2.initialize();
     final DataSource sent = fakePlatform.dataSources.last;
-    expect(sent.uri, startsWith('file:'), reason: 'cached local SS used');
-    expect(sent.uri, endsWith('/smooth/master.ism'));
-    expect(sent.httpHeaders, isEmpty);
+    final File? master = await cache.fileFor(
+      fixture.masterUrl,
+      cacheKey: 'smooth',
+      formatHint: VideoFormat.ss,
+    );
+    await expectCachedManifestSource(sent, master!);
     await controller2.dispose();
   });
 

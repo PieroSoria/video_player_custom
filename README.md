@@ -342,8 +342,8 @@ final controller = VideoPlayerController.networkUrl(
   disk in chunks, so device memory is not saturated even for large files.
 - **HLS** (`.m3u8`/`.m3u`, or `formatHint: VideoFormat.hls`) is cached whole:
   playlists, segments and AES-128 keys are downloaded and their references
-  rewritten to local files, so the next open plays the `file://` master
-  playlist without network.
+  rewritten to local files, so the next open uses the saved presentation
+  without contacting the original server.
 - **DASH** (`.mpd`, or `formatHint: VideoFormat.dash`) and **Smooth
   Streaming** (`Manifest`, or `formatHint: VideoFormat.ss`) are cached whole
   too: the manifest is parsed, every segment/fragment is downloaded and the
@@ -359,11 +359,16 @@ final controller = VideoPlayerController.networkUrl(
   three segments) rather than a fixed number, so the decoder keeps enough
   runway at segment boundaries for the picture not to freeze while audio
   continues; the loopback feed fills instantly so startup is not delayed.
-- **Live**: pass `isLive: true` and the source is never written to the cache
+- **Live**: pass `isLive: true` and the source never reads or writes the cache,
+  even when that `cacheKey` already has a saved copy
   (a manifest snapshot goes stale in seconds). Live manifests themselves
   (dynamic DASH, DVR/Smooth Streaming) are also rejected by the downloaders
   and keep streaming live.
 - **Web (`kIsWeb`)** never caches: the disk cache is desktop/mobile only.
+
+Manifest detection ignores URL query parameters and fragments, so
+`video.m3u8?token=...` is recognized as HLS. For URLs without a filename
+extension, pass `formatHint: VideoFormat.hls` (or the corresponding format).
 
 Point `VideoPlayerCache.instance` to a persistent directory to keep files
 across launches, and tune the LRU budget:
