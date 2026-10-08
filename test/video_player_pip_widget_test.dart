@@ -18,19 +18,35 @@ void main() {
   late VideoPlayerPlatform originalPlatform;
   late FakeVideoPlayerPlatform backend;
   late List<VideoPlayerController> controllers;
+  late List<MethodCall> pipCalls;
   Future<bool> Function(int)? enterResponse;
+  Future<void> Function(int)? accentResponse;
+  bool? inPipResponse;
 
   setUp(() {
     originalPlatform = VideoPlayerPlatform.instance;
     backend = FakeVideoPlayerPlatform();
     VideoPlayerPlatform.instance = backend;
     controllers = <VideoPlayerController>[];
+    pipCalls = <MethodCall>[];
     enterResponse = null;
+    accentResponse = null;
+    inPipResponse = null;
     messenger.setMockMethodCallHandler(channel, (MethodCall call) async {
+      pipCalls.add(call);
+      if (call.method == 'setPipAccentColor' && accentResponse != null) {
+        await accentResponse!(
+          (call.arguments as Map<dynamic, dynamic>)['playerId'] as int,
+        );
+        return null;
+      }
       if (call.method == 'enterPipMode' && enterResponse != null) {
         return enterResponse!(
           (call.arguments as Map<dynamic, dynamic>)['playerId'] as int,
         );
+      }
+      if (call.method == 'isInPipMode' && inPipResponse != null) {
+        return inPipResponse;
       }
       return call.method == 'reset' ? null : true;
     });
@@ -65,6 +81,29 @@ void main() {
     ),
   );
 
+  Widget themedView(
+    VideoPlayerController controller,
+    Color primary, {
+    Key? key,
+  }) => Theme(
+    data: ThemeData(
+      colorScheme: ColorScheme.fromSeed(seedColor: primary)
+          .copyWith(primary: primary),
+    ),
+    child: view(controller, key: key),
+  );
+
+  List<MethodCall> accentCalls() =>
+      pipCalls.where((call) => call.method == 'setPipAccentColor').toList();
+
+  void expectAccent(MethodCall call, int playerId, Color primary) {
+    expect(call.method, 'setPipAccentColor');
+    expect(call.arguments, <String, int>{
+      'playerId': playerId,
+      'color': primary.toARGB32(),
+    });
+  }
+
   Future<void> nativeEvent(
     WidgetTester tester,
     String method,
@@ -98,6 +137,144 @@ void main() {
         debugDefaultTargetPlatformOverride = null;
       }
     });
+  }
+
+  pipWidgetTest(
+    'Windows sends the theme color when a mounted player initializes',
+    (tester) async {
+      const primary = Color(0xFF6750A4);
+      final controller = VideoPlayerController.networkUrl(
+        Uri.parse('https://example.com/video.mp4'),
+      );
+      controllers.add(controller);
+      await tester.pumpWidget(themedView(controller, primary));
+      expect(accentCalls(), isEmpty);
+      await tester.runAsync(controller.initialize);
+      await tester.pump();
+      expect(accentCalls(), hasLength(1));
+      expectAccent(accentCalls().single, controller.playerId, primary);
+    },
+  );
+
+  pipWidgetTest(
+    'Windows updates primary in PiP and deduplicates equal theme colors',
+    (tester) async {
+      const primary = Color(0xFF6750A4);
+      const updated = Color(0xFF008577);
+      final owner = await createController(tester);
+      await tester.pumpWidget(themedView(owner, primary));
+      expectAccent(accentCalls().single, owner.playerId, primary);
+      await VideoPlayerPip.enterPipMode(owner);
+      await tester.pump();
+      pipCalls.clear();
+      await tester.pumpWidget(themedView(owner, primary));
+      expect(accentCalls(), isEmpty);
+      await tester.pumpWidget(themedView(owner, updated));
+      expectAccent(accentCalls().single, owner.playerId, updated);
+      expect(pipPlayerId.value, owner.playerId);
+      await tester.pumpWidget(themedView(owner, updated));
+      expect(accentCalls(), hasLength(1));
+    },
+  );
+
+  pipWidgetTest(
+    'a controller swap targets the new player even with the same primary',
+    (tester) async {
+      const primary = Color(0xFF6750A4);
+      const key = ValueKey<String>('themed-video');
+      final first = await createController(tester);
+      final second = await createController(tester);
+      await tester.pumpWidget(themedView(first, primary, key: key));
+      await VideoPlayerPip.enterPipMode(first);
+      await tester.pump();
+      pipCalls.clear();
+      await tester.pumpWidget(themedView(second, primary, key: key));
+      expectAccent(accentCalls().single, second.playerId, primary);
+      expect(pipPlayerId.value, first.playerId);
+    },
+  );
+
+  pipWidgetTest(
+    'entry retains the primary after its inline widget is unmounted',
+    (tester) async {
+      const primary = Color(0xFF008577);
+      final owner = await createController(tester);
+      await tester.pumpWidget(themedView(owner, primary));
+      await tester.pumpWidget(const SizedBox.shrink());
+      pipCalls.clear();
+      expect(await VideoPlayerPip.enterPipMode(owner), isTrue);
+      final opening = pipCalls
+          .where(
+            (call) =>
+                call.method == 'setPipAccentColor' ||
+                call.method == 'enterPipMode',
+          )
+          .toList();
+      expect(opening, hasLength(2));
+      expectAccent(opening.first, owner.playerId, primary);
+      expect(opening.last.method, 'enterPipMode');
+    },
+  );
+
+  for (final api in <String>['enter', 'toggle', 'extension enter']) {
+    pipWidgetTest('$api forwards an explicit primary before opening PiP', (
+      tester,
+    ) async {
+      const primary = Color(0xFF123456);
+      final owner = await createController(tester);
+      inPipResponse = false;
+      final bool entered = switch (api) {
+        'enter' => await VideoPlayerPip.enterPipMode(
+          owner,
+          primaryColor: primary,
+        ),
+        'toggle' => await VideoPlayerPip.togglePipMode(
+          owner,
+          primaryColor: primary,
+        ),
+        _ => await owner.enterPipMode(primaryColor: primary),
+      };
+      expect(entered, isTrue);
+      final opening = pipCalls
+          .where(
+            (call) =>
+                call.method == 'setPipAccentColor' ||
+                call.method == 'enterPipMode',
+          )
+          .toList();
+      expect(opening, hasLength(2));
+      expectAccent(opening.first, owner.playerId, primary);
+      expect(opening.last.method, 'enterPipMode');
+    });
+  }
+
+  for (final dispose in <bool>[true, false]) {
+    pipWidgetTest(
+      '${dispose ? 'dispose' : 'reset'} during the accent reply cancels native entry',
+      (tester) async {
+        final owner = await createController(tester);
+        final response = Completer<void>();
+        accentResponse = (_) => response.future;
+        final entering = VideoPlayerPip.enterPipMode(
+          owner,
+          primaryColor: const Color(0xFF6750A4),
+        );
+        await tester.pump();
+        expect(accentCalls(), hasLength(1));
+        if (dispose) {
+          await tester.runAsync(owner.dispose);
+        } else {
+          await VideoPlayerPip.reset();
+        }
+        response.complete();
+        expect(await entering, isFalse);
+        expect(
+          pipCalls.where((call) => call.method == 'enterPipMode'),
+          isEmpty,
+        );
+        expect(pipPlayerId.value, isNull);
+      },
+    );
   }
 
   pipWidgetTest(

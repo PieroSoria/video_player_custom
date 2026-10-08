@@ -13,6 +13,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <deque>
 #include <functional>
@@ -164,6 +165,8 @@ double ReadDouble(const EncodableValue* args, const char* key, double fallback) 
 
 // A separate, always-on-top window. The Flutter view keeps its own size and
 // texture; both views consume frames from the same native player.
+constexpr COLORREF kDefaultPipAccentColor = RGB(103, 80, 164);
+
 class PipWindow {
  public:
   enum class Action { kClose, kRestore };
@@ -176,6 +179,11 @@ class PipWindow {
 
   void set_player(std::shared_ptr<video_player_custom::WmfVideoPlayer> player) {
     player_ = std::move(player);
+  }
+
+  void set_accent_color(COLORREF color) {
+    accent_color_ = color;
+    if (window_) InvalidateRect(window_, nullptr, FALSE);
   }
 
   bool Create(int64_t width, int64_t height, HWND host) {
@@ -219,6 +227,7 @@ class PipWindow {
     controls_visible_ = false;
     mouse_over_video_ = false;
     tracking_mouse_ = false;
+    tracking_non_client_ = false;
     hide_at_ms_ = 0;
     POINT cursor;
     if (GetCursorPos(&cursor) && WindowFromPoint(cursor) == hwnd) {
@@ -245,7 +254,8 @@ class PipWindow {
  private:
   static constexpr UINT kRenderTimerId = 0x5049;
   static constexpr UINT kRenderIntervalMs = 16;
-  static constexpr int kBandPx = 32;
+  static constexpr int kTopInsetPx = 6;
+  static constexpr int kActionInsetPx = 8;
   static constexpr int kButtonPx = 32;
   static constexpr int kResizeBorderPx = 6;
   static constexpr int kControlRadiusPx = 22;
@@ -345,7 +355,21 @@ class PipWindow {
         if (pressed_ == Button::kSeek) UpdateSeekPreview(hwnd, point.x);
         return 0;
       }
+      case WM_NCMOUSEMOVE: {
+        POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        ScreenToClient(hwnd, &point);
+        UpdateHover(hwnd, point, true);
+        break;
+      }
       case WM_MOUSELEAVE:
+      case WM_NCMOUSELEAVE:
+        // A leave posted by the old region can arrive after mouse movement
+        // has already installed tracking in the other region of this window.
+        if (tracking_mouse_ &&
+            ((message == WM_MOUSELEAVE && tracking_non_client_) ||
+             (message == WM_NCMOUSELEAVE && !tracking_non_client_))) {
+          return 0;
+        }
         tracking_mouse_ = false;
         mouse_over_video_ = false;
         hover_ = Button::kNone;
@@ -402,8 +426,12 @@ class PipWindow {
     if (right) return HTRIGHT;
     if (top) return HTTOP;
     if (bottom) return HTBOTTOM;
-    if (pt.y < kBandPx && pt.x < rc.right - kButtonPx * 2) {
-      return HTCAPTION;
+    if (pt.y < kTopInsetPx + kButtonPx) {
+      const Button button = ButtonAt(hwnd, pt);
+      if (button != Button::kClose && button != Button::kRestore) {
+        // The unused top portion of the video remains a window drag handle.
+        return HTCAPTION;
+      }
     }
     return HTCLIENT;
   }
@@ -412,12 +440,16 @@ class PipWindow {
     RECT rc;
     GetClientRect(hwnd, &rc);
     if (!PtInRect(&rc, pt)) return Button::kNone;
-    if (pt.y < kBandPx) {
-      if (pt.x >= rc.right - kButtonPx) return Button::kClose;
-      if (pt.x >= rc.right - kButtonPx * 2) return Button::kRestore;
-      return Button::kNone;
-    }
     if (controls_visible_) {
+      if (pt.y >= kTopInsetPx && pt.y < kTopInsetPx + kButtonPx &&
+          pt.x < rc.right - kActionInsetPx) {
+        if (pt.x >= rc.right - kActionInsetPx - kButtonPx) {
+          return Button::kClose;
+        }
+        if (pt.x >= rc.right - kActionInsetPx - kButtonPx * 2) {
+          return Button::kRestore;
+        }
+      }
       const auto player = Player();
       const bool seekable = player && player->GetDurationMs() > 0;
       if (pt.y >= rc.bottom - 32 && pt.y < rc.bottom - 8 &&
@@ -426,15 +458,16 @@ class PipWindow {
         return seekable ? Button::kSeek : Button::kNone;
       }
       const int center_y = ControlCenterY(rc);
-      const int radius = ControlRadius(rc);
-      if (std::abs(pt.y - center_y) <= radius) {
-        if (std::abs(pt.x - rc.right / 2) <= radius) {
-          return Button::kPlayPause;
-        }
-        if (std::abs(pt.x - (rc.right / 2 - kControlSpacingPx)) <= radius) {
+      const int radius = kControlRadiusPx;
+      if (std::abs(pt.y - center_y) <= radius &&
+          std::abs(pt.x - rc.right / 2) <= radius) {
+        return Button::kPlayPause;
+      }
+      if (std::abs(pt.y - center_y) <= 18) {
+        if (std::abs(pt.x - (rc.right / 2 - kControlSpacingPx)) <= 18) {
           return seekable ? Button::kRewind : Button::kNone;
         }
-        if (std::abs(pt.x - (rc.right / 2 + kControlSpacingPx)) <= radius) {
+        if (std::abs(pt.x - (rc.right / 2 + kControlSpacingPx)) <= 18) {
           return seekable ? Button::kForward : Button::kNone;
         }
       }
@@ -443,21 +476,15 @@ class PipWindow {
   }
 
   static int ControlCenterY(const RECT& rc) {
-    // At compact sizes reserve the seek panel before placing the buttons.
-    // Their hit areas must never overlap the seek bar or title controls.
-    const int available = rc.bottom - kBandPx - (rc.bottom < 180 ? 48 : 0);
-    return kBandPx + available / 2;
+    // At the 180x120 minimum, the central hit area ends at y=82; the seek
+    // hit area starts at y=88 and the top action buttons end at y=38.
+    return rc.bottom / 2;
   }
 
-  static int ControlRadius(const RECT& rc) {
-    return std::min(kControlRadiusPx,
-        std::max(14, (static_cast<int>(rc.bottom) - kBandPx - 48) / 2 - 2));
-  }
-
-  void UpdateHover(HWND hwnd, POINT point) {
+  void UpdateHover(HWND hwnd, POINT point, bool non_client = false) {
     RECT rc;
     GetClientRect(hwnd, &rc);
-    const bool inside = PtInRect(&rc, point) && point.y >= kBandPx;
+    const bool inside = PtInRect(&rc, point);
     bool changed = false;
     if (inside) {
       changed = !controls_visible_;
@@ -468,9 +495,12 @@ class PipWindow {
       mouse_over_video_ = false;
       hide_at_ms_ = GetTickCount64() + kControlsHideDelayMs;
     }
-    if (!tracking_mouse_ && PtInRect(&rc, point)) {
-      TRACKMOUSEEVENT track{sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0};
+    if ((!tracking_mouse_ || tracking_non_client_ != non_client) && inside) {
+      TRACKMOUSEEVENT track{sizeof(TRACKMOUSEEVENT),
+          static_cast<DWORD>(TME_LEAVE | (non_client ? TME_NONCLIENT : 0)),
+          hwnd, 0};
       tracking_mouse_ = TrackMouseEvent(&track) != FALSE;
+      tracking_non_client_ = non_client;
     }
     const Button hover = ButtonAt(hwnd, point);
     changed = changed || hover != hover_;
@@ -596,27 +626,23 @@ class PipWindow {
 
   void PaintScene(HDC dc, const RECT& rc) const {
     FillRect(dc, &rc, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
-    RECT video_rc = rc;
-    video_rc.top += kBandPx;
     const auto player = Player();
     int64_t width = 0;
     int64_t height = 0;
     int64_t stride = 0;
     std::vector<uint8_t> data;
-    if (player && video_rc.bottom > video_rc.top &&
+    if (player &&
         player->CopyCurrentFrame(&data, &width, &height, &stride) &&
         width > 0 && height > 0) {
-      int draw_w;
-      int draw_h;
-      const double frame_aspect = static_cast<double>(width) / height;
-      const double client_aspect =
-          static_cast<double>(video_rc.right) / (video_rc.bottom - video_rc.top);
-      if (frame_aspect > client_aspect) {
-        draw_w = video_rc.right;
-        draw_h = static_cast<int>(draw_w / frame_aspect);
+      // Fill the entire client area. Clip a centered source crop rather than
+      // adding letterbox bands when the floating window changes its aspect.
+      const double client_aspect = static_cast<double>(rc.right) / rc.bottom;
+      int source_width = static_cast<int>(width);
+      int source_height = static_cast<int>(height);
+      if (static_cast<double>(width) / height > client_aspect) {
+        source_width = std::max(1, static_cast<int>(height * client_aspect));
       } else {
-        draw_h = video_rc.bottom - video_rc.top;
-        draw_w = static_cast<int>(draw_h * frame_aspect);
+        source_height = std::max(1, static_cast<int>(width / client_aspect));
       }
       BITMAPINFO bi = {};
       bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
@@ -625,42 +651,90 @@ class PipWindow {
       bi.bmiHeader.biPlanes = 1;
       bi.bmiHeader.biBitCount = 32;
       bi.bmiHeader.biCompression = BI_RGB;
-      StretchDIBits(dc, (video_rc.right - draw_w) / 2,
-                    video_rc.top + (video_rc.bottom - video_rc.top - draw_h) / 2,
-                    draw_w, draw_h,
-                    0, 0, static_cast<int>(width), static_cast<int>(height),
+      StretchDIBits(dc, 0, 0, rc.right, rc.bottom,
+                    (static_cast<int>(width) - source_width) / 2,
+                    (static_cast<int>(height) - source_height) / 2,
+                    source_width, source_height,
                     data.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
     }
-    RECT title = rc;
-    title.bottom = kBandPx;
-    const HBRUSH band = CreateSolidBrush(RGB(32, 32, 32));
-    FillRect(dc, &title, band);
-    DeleteObject(band);
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, RGB(255, 255, 255));
-    const auto old_font = SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT));
-    title.left += 12;
-    title.right -= kButtonPx * 2;
-    DrawTextW(dc, L"Video (PiP)", -1, &title,
-              DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    SelectObject(dc, old_font);
-    const HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
-    const auto old_pen = SelectObject(dc, pen);
+    if (controls_visible_ && player) {
+      PaintTopActions(dc, rc);
+      PaintControls(dc, rc, *player);
+    }
+  }
+
+  void PaintTopActions(HDC dc, const RECT& rc) const {
     const auto old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-    const int close_x = rc.right - kButtonPx / 2;
-    MoveToEx(dc, close_x - 5, 11, nullptr);
-    LineTo(dc, close_x + 5, 21);
-    MoveToEx(dc, close_x + 5, 11, nullptr);
-    LineTo(dc, close_x - 5, 21);
-    const int restore_x = close_x - kButtonPx;
-    Rectangle(dc, restore_x - 6, 12, restore_x + 4, 22);
-    MoveToEx(dc, restore_x - 3, 9, nullptr);
-    LineTo(dc, restore_x + 7, 9);
-    LineTo(dc, restore_x + 7, 19);
+    // A one-pixel icon shadow keeps the transparent actions legible on a
+    // bright frame without introducing a dark title bar or button panel.
+    for (const int shadow : {1, 0}) {
+      const HPEN pen = CreatePen(PS_SOLID, 2,
+          shadow ? RGB(40, 40, 40) : RGB(255, 255, 255));
+      const auto old_pen = SelectObject(dc, pen);
+      const int close_x = rc.right - kActionInsetPx - kButtonPx / 2 + shadow;
+      const int y = kTopInsetPx + kButtonPx / 2 + shadow;
+      MoveToEx(dc, close_x - 4, y - 4, nullptr);
+      LineTo(dc, close_x + 5, y + 5);
+      MoveToEx(dc, close_x + 4, y - 4, nullptr);
+      LineTo(dc, close_x - 5, y + 5);
+      const int restore_x = close_x - kButtonPx;
+      Rectangle(dc, restore_x - 7, y - 4, restore_x + 3, y + 6);
+      MoveToEx(dc, restore_x - 3, y - 7, nullptr);
+      LineTo(dc, restore_x + 7, y - 7);
+      LineTo(dc, restore_x + 7, y + 3);
+      SelectObject(dc, old_pen);
+      DeleteObject(pen);
+    }
     SelectObject(dc, old_brush);
-    SelectObject(dc, old_pen);
-    DeleteObject(pen);
-    if (controls_visible_ && player) PaintControls(dc, rc, *player);
+  }
+
+  static COLORREF ContrastColor(COLORREF background) {
+    const auto linear = [](int channel) {
+      const double value = channel / 255.0;
+      return value <= 0.04045 ? value / 12.92
+                             : std::pow((value + 0.055) / 1.055, 2.4);
+    };
+    const double luminance = 0.2126 * linear(GetRValue(background)) +
+        0.7152 * linear(GetGValue(background)) +
+        0.0722 * linear(GetBValue(background));
+    return luminance > 0.179 ? RGB(0, 0, 0) : RGB(255, 255, 255);
+  }
+
+  static void PaintSkipIcon(HDC dc, int x, int y, int direction, bool enabled) {
+    const auto old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    const HFONT font = CreateFontW(-10, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE,
+        FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    const auto old_font = SelectObject(dc, font);
+    for (const int shadow : {1, 0}) {
+      const COLORREF color = shadow ? RGB(40, 40, 40) :
+          (enabled ? RGB(255, 255, 255) : RGB(170, 170, 170));
+      const HPEN pen = CreatePen(PS_SOLID, 2, color);
+      const auto old_pen = SelectObject(dc, pen);
+      POINT arc[21];
+      for (int i = 0; i <= 20; ++i) {
+        const double angle = (-50.0 + 320.0 * i / 20.0) *
+            3.141592653589793 / 180.0;
+        arc[i] = POINT{x + direction * static_cast<LONG>(
+            std::lround(11 * std::cos(angle))) + shadow,
+            y + static_cast<LONG>(std::lround(11 * std::sin(angle))) + shadow};
+      }
+      Polyline(dc, arc, 21);
+      POINT arrow[]{{x - direction * 5 + shadow, y - 15 + shadow},
+                    {x + shadow, y - 11 + shadow},
+                    {x - direction * 5 + shadow, y - 7 + shadow}};
+      Polyline(dc, arrow, 3);
+      SetTextColor(dc, color);
+      RECT seconds{x - 9 + shadow, y - 5 + shadow,
+                   x + 10 + shadow, y + 9 + shadow};
+      DrawTextW(dc, L"10", -1, &seconds,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+      SelectObject(dc, old_pen);
+      DeleteObject(pen);
+    }
+    SelectObject(dc, old_font);
+    SelectObject(dc, old_brush);
+    DeleteObject(font);
   }
 
   static std::wstring TimeLabel(int64_t ms) {
@@ -678,23 +752,26 @@ class PipWindow {
     const int64_t duration = player.GetDurationMs();
     const int64_t position = std::max<int64_t>(0,
         seek_preview_ms_ >= 0 ? seek_preview_ms_ : player.GetPositionMs());
-    RECT bottom{0, std::max(kBandPx, static_cast<int>(rc.bottom) - 48),
-                rc.right, rc.bottom};
-    const HBRUSH background = CreateSolidBrush(RGB(24, 24, 24));
-    FillRect(dc, &bottom, background);
-    DeleteObject(background);
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, RGB(255, 255, 255));
     const auto old_font = SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT));
     RECT time{16, rc.bottom - 46, rc.right - 16, rc.bottom - 28};
     const std::wstring label = TimeLabel(position) + L" / " +
         (duration > 0 ? TimeLabel(duration) : L"--:--");
-    DrawTextW(dc, label.c_str(), -1, &time,
-              DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    if (rc.bottom >= 160) {
+      RECT shadow = time;
+      OffsetRect(&shadow, 1, 1);
+      SetTextColor(dc, RGB(40, 40, 40));
+      DrawTextW(dc, label.c_str(), -1, &shadow,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+      SetTextColor(dc, RGB(255, 255, 255));
+      DrawTextW(dc, label.c_str(), -1, &time,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
 
     const int track_width = std::max(1, static_cast<int>(rc.right) - 32);
-    RECT track{16, rc.bottom - 22, rc.right - 16, rc.bottom - 18};
-    const HBRUSH remaining = CreateSolidBrush(RGB(85, 85, 85));
+    RECT track{16, rc.bottom - 21, rc.right - 16, rc.bottom - 18};
+    const HBRUSH remaining = CreateSolidBrush(RGB(185, 185, 185));
     FillRect(dc, &track, remaining);
     DeleteObject(remaining);
     if (duration > 0) {
@@ -702,13 +779,13 @@ class PipWindow {
       buffered.right = 16 + static_cast<LONG>(track_width *
           static_cast<double>(std::clamp<int64_t>(player.GetBufferedPositionMs(),
                                                  0, duration)) / duration);
-      const HBRUSH buffer_brush = CreateSolidBrush(RGB(155, 155, 155));
+      const HBRUSH buffer_brush = CreateSolidBrush(RGB(235, 235, 235));
       FillRect(dc, &buffered, buffer_brush);
       DeleteObject(buffer_brush);
       RECT played = track;
       played.right = 16 + static_cast<LONG>(track_width *
           static_cast<double>(std::min(position, duration)) / duration);
-      const HBRUSH accent = CreateSolidBrush(RGB(255, 48, 48));
+      const HBRUSH accent = CreateSolidBrush(accent_color_);
       FillRect(dc, &played, accent);
       const auto old_brush = SelectObject(dc, accent);
       const auto old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
@@ -721,45 +798,34 @@ class PipWindow {
     }
 
     const int center_y = ControlCenterY(rc);
-    const int radius = ControlRadius(rc);
+    const int radius = kControlRadiusPx;
     for (const Button button : {Button::kRewind, Button::kPlayPause,
                                 Button::kForward}) {
-      const int x = rc.right / 2 + (button == Button::kRewind ? -56 :
-                                   button == Button::kForward ? 56 : 0);
+      const int x = rc.right / 2 +
+          (button == Button::kRewind ? -kControlSpacingPx :
+           button == Button::kForward ? kControlSpacingPx : 0);
       const bool enabled = button == Button::kPlayPause || duration > 0;
-      const HBRUSH circle = CreateSolidBrush(
-          enabled && (hover_ == button || pressed_ == button)
-              ? RGB(65, 65, 65) : RGB(32, 32, 32));
+      if (button != Button::kPlayPause) {
+        PaintSkipIcon(dc, x, center_y,
+                      button == Button::kRewind ? -1 : 1, enabled);
+        continue;
+      }
+      const HBRUSH circle = CreateSolidBrush(accent_color_);
       const auto old_brush = SelectObject(dc, circle);
       const auto old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
       Ellipse(dc, x - radius, center_y - radius,
               x + radius + 1, center_y + radius + 1);
-      const HBRUSH icon = CreateSolidBrush(enabled ? RGB(255, 255, 255) :
-                                                    RGB(120, 120, 120));
+      const HBRUSH icon = CreateSolidBrush(ContrastColor(accent_color_));
       SelectObject(dc, icon);
-      if (button == Button::kPlayPause) {
-        if (player.IsPlaying()) {
-          RECT left{x - 7, center_y - 9, x - 2, center_y + 9};
-          RECT right{x + 2, center_y - 9, x + 7, center_y + 9};
-          FillRect(dc, &left, icon);
-          FillRect(dc, &right, icon);
-        } else {
-          POINT triangle[]{{x - 5, center_y - 10}, {x - 5, center_y + 10},
-                           {x + 10, center_y}};
-          Polygon(dc, triangle, 3);
-        }
+      if (player.IsPlaying()) {
+        RECT left{x - 7, center_y - 9, x - 2, center_y + 9};
+        RECT right{x + 2, center_y - 9, x + 7, center_y + 9};
+        FillRect(dc, &left, icon);
+        FillRect(dc, &right, icon);
       } else {
-        const int direction = button == Button::kRewind ? -1 : 1;
-        for (const int offset : {-5, 5}) {
-          const int tip = x + offset + direction * 4;
-          POINT triangle[]{{tip, center_y - 6},
-                           {tip - direction * 7, center_y - 12},
-                           {tip - direction * 7, center_y}};
-          Polygon(dc, triangle, 3);
-        }
-        SetTextColor(dc, enabled ? RGB(255, 255, 255) : RGB(120, 120, 120));
-        RECT seconds{x - 18, center_y + 1, x + 18, center_y + 18};
-        DrawTextW(dc, L"10", -1, &seconds, DT_CENTER | DT_SINGLELINE);
+        POINT triangle[]{{x - 5, center_y - 10}, {x - 5, center_y + 10},
+                         {x + 10, center_y}};
+        Polygon(dc, triangle, 3);
       }
       SelectObject(dc, old_brush);
       SelectObject(dc, old_pen);
@@ -782,8 +848,10 @@ class PipWindow {
   int64_t last_position_ms_ = -1;
   bool last_playing_ = false;
   bool controls_visible_ = false;
+  COLORREF accent_color_ = kDefaultPipAccentColor;
   bool mouse_over_video_ = false;
   bool tracking_mouse_ = false;
+  bool tracking_non_client_ = false;
   ULONGLONG hide_at_ms_ = 0;
   int64_t seek_preview_ms_ = -1;
   Button hover_ = Button::kNone;
@@ -825,6 +893,28 @@ class VideoPlayerCustomPlugin {
         return;
       }
       const auto* args = std::get_if<EncodableMap>(call.arguments());
+      if (method == "setPipAccentColor") {
+        const int64_t player_id = ReadInt(call.arguments(), "playerId", -1);
+        const int64_t color = ReadInt(call.arguments(), "color", -1);
+        if (player_id < 0 || color < 0 || color > 0xffffffffLL) {
+          result->Error("invalid_arguments",
+                        "A valid playerId and ARGB32 color are required.");
+          return;
+        }
+        const auto player = resolver_ ? resolver_(player_id) : nullptr;
+        if (!player) {
+          result->Error("invalid_arguments", "The player no longer exists.");
+          return;
+        }
+        // GDI draws over an opaque video frame; ignore ARGB alpha and retain
+        // each player's theme color across PiP exit/re-entry.
+        const COLORREF accent = RGB((color >> 16) & 0xff,
+                                    (color >> 8) & 0xff, color & 0xff);
+        accent_colors_[player_id] = accent;
+        if (active_player_id_ == player_id) pip_window_.set_accent_color(accent);
+        result->Success();
+        return;
+      }
       if (method == "enterPipMode") {
         const int64_t player_id =
             ReadInt(call.arguments(), "playerId", -1);
@@ -859,6 +949,7 @@ class VideoPlayerCustomPlugin {
 
   void OnPlayerDisposed(int64_t player_id) {
     if (active_player_id_ == player_id) Exit(false, true);
+    accent_colors_.erase(player_id);
   }
 
  private:
@@ -872,6 +963,9 @@ class VideoPlayerCustomPlugin {
       return false;
     }
     pip_window_.set_player(player);
+    const auto accent = accent_colors_.find(player_id);
+    pip_window_.set_accent_color(accent != accent_colors_.end()
+        ? accent->second : kDefaultPipAccentColor);
     active_player_id_ = player_id;
     if (!pip_window_.Create(width, height, host_window_)) {
       pip_window_.set_player(nullptr);
@@ -925,6 +1019,7 @@ class VideoPlayerCustomPlugin {
   PlayerResolver resolver_;
   HWND host_window_ = nullptr;
   PipWindow pip_window_;
+  std::map<int64_t, COLORREF> accent_colors_;
   std::unique_ptr<flutter::MethodChannel<EncodableValue>> channel_;
   int64_t active_player_id_ = -1;
   bool active_ = false;

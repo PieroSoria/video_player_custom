@@ -15,7 +15,10 @@ import 'package:video_player_platform_interface/video_player_platform_interface.
 
 import 'src/closed_caption_file.dart';
 import 'src/cache/video_player_cache.dart';
+import 'src/cache/network_cache.dart';
 import 'src/pip/pip_state.dart';
+import 'src/pip/video_player_custom_pip_platform_interface.dart';
+import 'src/platform_impl/playback_position_event.dart';
 
 export 'package:video_player_platform_interface/video_player_platform_interface.dart'
     show
@@ -589,6 +592,7 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
   Timer? _timer;
   bool _isDisposed = false;
   Completer<void>? _creatingCompleter;
+  Completer<void>? _initializingCompleter;
   StreamSubscription<dynamic>? _eventSubscription;
   _VideoAppLifeCycleObserver? _lifeCycleObserver;
 
@@ -596,6 +600,13 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
   @visibleForTesting
   static const int kUninitializedPlayerId = -1;
   int _playerId = kUninitializedPlayerId;
+  String? _browserCachedSource;
+
+  void _releaseBrowserCache() {
+    final source = _browserCachedSource;
+    _browserCachedSource = null;
+    if (source != null) releaseBrowserCachedSource(source);
+  }
 
   /// This is just exposed for testing. It shouldn't be used by anyone depending
   /// on the plugin.
@@ -621,7 +632,35 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     required Map<String, String> httpHeaders,
     String? cacheKey,
   }) async {
-    if (cacheKey == null || kIsWeb || isLive) {
+    if (kIsWeb) {
+      if (isLive && httpHeaders.isNotEmpty) {
+        throw UnsupportedError(
+          'Live web video cannot use custom HTTP headers. '
+          'Use cookies or a signed URL for authentication.',
+        );
+      }
+      final cached = cacheKey == null || isLive
+          ? null
+          : await resolveBrowserCachedSource(
+              uri,
+              cacheKey: cacheKey,
+              headers: httpHeaders,
+              formatHint: formatHint,
+              isLive: isLive,
+            );
+      if (_isDisposed) {
+        if (cached != null) releaseBrowserCachedSource(cached);
+        throw StateError('VideoPlayerController is disposed');
+      }
+      _browserCachedSource = cached;
+      return platform_interface.DataSource(
+        sourceType: platform_interface.DataSourceType.network,
+        uri: cached ?? uri,
+        formatHint: formatHint,
+        httpHeaders: cached == null ? httpHeaders : const <String, String>{},
+      );
+    }
+    if (cacheKey == null || isLive) {
       return platform_interface.DataSource(
         sourceType: platform_interface.DataSourceType.network,
         uri: uri,
@@ -724,6 +763,9 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
 
   /// Attempts to open the given [dataSource] and load metadata about the video.
   Future<void> initialize() async {
+    if (_isDisposed) {
+      throw StateError('VideoPlayerController is disposed');
+    }
     final bool allowBackgroundPlayback = videoPlayerOptions?.allowBackgroundPlayback ?? false;
     if (!allowBackgroundPlayback) {
       _lifeCycleObserver = _VideoAppLifeCycleObserver(this);
@@ -734,6 +776,7 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     try {
       await _initialize();
     } catch (error) {
+      _releaseBrowserCache();
       releasePipPlayer(_playerId);
       // Native desktop creation can fail before an event stream exists. Let
       // dispose() finish even when opening the source never produced a player.
@@ -801,7 +844,10 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     }
     registerPipPlayer(_playerId);
     _creatingCompleter!.complete(null);
-    final initializingCompleter = Completer<void>();
+    final initializingCompleter = _initializingCompleter = Completer<void>();
+    // Disposal can cancel initialization while platform options are awaiting.
+    // Keep that early rejection handled until _initialize returns this future.
+    unawaited(initializingCompleter.future.catchError((Object _) {}));
 
     await _videoPlayerPlatform.setPreventsDisplaySleepDuringVideoPlayback(
       _playerId,
@@ -811,6 +857,9 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     // Apply the web-specific options
     if (kIsWeb && videoPlayerOptions?.webOptions != null) {
       await _videoPlayerPlatform.setWebOptions(_playerId, videoPlayerOptions!.webOptions!);
+    }
+    if (_isDisposed) {
+      throw StateError('VideoPlayerController was disposed during initialization');
     }
 
     void eventListener(platform_interface.VideoEvent event) {
@@ -862,12 +911,16 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
             value = value.copyWith(isPlaying: event.isPlaying);
           }
         case platform_interface.VideoEventType.unknown:
+          if (event is PlaybackPositionEvent) _updatePosition(event.position);
           break;
       }
     }
 
     if (_closedCaptionFileFuture != null) {
       await _updateClosedCaptionWithFuture(_closedCaptionFileFuture);
+    }
+    if (_isDisposed) {
+      throw StateError('VideoPlayerController was disposed during initialization');
     }
 
     void errorListener(Object obj) {
@@ -899,14 +952,25 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
       if (!_isDisposed) {
         releasePipPlayer(_playerId);
         _isDisposed = true;
+        final initializing = _initializingCompleter;
+        if (initializing != null && !initializing.isCompleted) {
+          initializing.completeError(
+            StateError('VideoPlayerController was disposed during initialization'),
+          );
+        }
         _timer?.cancel();
         await _eventSubscription?.cancel();
-        if (_playerId != kUninitializedPlayerId) {
-          await _videoPlayerPlatform.dispose(_playerId);
+        try {
+          if (_playerId != kUninitializedPlayerId) {
+            await _videoPlayerPlatform.dispose(_playerId);
+          }
+        } finally {
+          _releaseBrowserCache();
         }
       }
       _lifeCycleObserver?.dispose();
     }
+    _releaseBrowserCache();
     _isDisposed = true;
     super.dispose();
   }
@@ -1036,7 +1100,7 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     if (_isDisposedOrNotInitialized) {
       return;
     }
-    if (position > value.duration) {
+    if (!value.duration.isNegative && position > value.duration) {
       position = value.duration;
     } else if (position < Duration.zero) {
       position = Duration.zero;
@@ -1155,6 +1219,7 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
   Future<void> _updateClosedCaptionWithFuture(Future<ClosedCaptionFile>? closedCaptionFile) async {
     if (closedCaptionFile != null) {
       _closedCaptionFile = await closedCaptionFile;
+      if (_isDisposed) return;
 
       // Only sort if we haven't sorted yet (first initialization)
       _sortedCaptions ??= List<Caption>.from(_closedCaptionFile!.captions)
@@ -1174,13 +1239,13 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     // The underlying native implementation on some platforms sometimes reports
     // a position slightly past the reported max duration. Clamp to the duration
     // to insulate clients from this behavior.
-    if (position > value.duration) {
+    if (!value.duration.isNegative && position > value.duration) {
       position = value.duration;
     }
     value = value.copyWith(
       position: position,
       caption: _getCaptionAt(position),
-      isCompleted: position == value.duration,
+      isCompleted: !value.duration.isNegative && position == value.duration,
     );
   }
 
@@ -1264,7 +1329,8 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
   /// the metadata available.
   ///
   /// Note: On iOS 13-14, this returns an empty list as the AVAssetVariant API
-  /// requires iOS 15+. On web, this throws an [UnimplementedError].
+  /// requires iOS 15+. On web, returns the browser's native video tracks when
+  /// available, or an empty list. These are not adaptive quality variants.
   ///
   /// Check [isVideoTrackSupportAvailable] before calling this method to ensure
   /// the platform supports video track selection.
@@ -1286,7 +1352,9 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
   ///
   /// On iOS, this sets `preferredPeakBitRate` on the AVPlayerItem.
   /// On Android, this uses ExoPlayer's track selection override.
-  /// On web, this throws an [UnimplementedError].
+  /// On web, explicit selection requires the native HTML videoTracks API.
+  /// Automatic quality selection (`null`) is not exposed by that API and
+  /// throws an [UnsupportedError].
   ///
   /// Check [isVideoTrackSupportAvailable] before calling this method to ensure
   /// the platform supports video track selection.
@@ -1369,7 +1437,8 @@ class VideoPlayer extends StatefulWidget {
   /// when [VideoPlayerValue.hasError] is true; otherwise the defaults (a black
   /// frame while loading and a centered error box) are used.
   /// Windows shows a "Picture in Picture" placeholder while this controller
-  /// owns the native PiP window.
+  /// owns the native PiP window. Its native controls follow the nearest
+  /// [ThemeData.colorScheme] primary color, including theme changes during PiP.
   const VideoPlayer(
     this.controller, {
     super.key,
@@ -1398,18 +1467,56 @@ class VideoPlayer extends StatefulWidget {
 }
 
 class _VideoPlayerState extends State<VideoPlayer> {
+  int? _primaryColor;
+  int? _lastAccentPlayerId;
+  int? _lastAccentColor;
+
   @override
   void initState() {
     super.initState();
+    widget.controller.addListener(_syncPipAccentColor);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
+      _primaryColor = Theme.of(context).colorScheme.primary.toARGB32();
+      _syncPipAccentColor();
+    }
+  }
+
+  void _syncPipAccentColor() {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.windows) return;
+    final int playerId = widget.controller.playerId;
+    final int? color = _primaryColor;
+    if (!widget.controller.value.isInitialized ||
+        color == null ||
+        pipPlayerToken(playerId) == null ||
+        (_lastAccentPlayerId == playerId && _lastAccentColor == color)) {
+      return;
+    }
+    _lastAccentPlayerId = playerId;
+    _lastAccentColor = color;
+    rememberPipAccentColor(playerId, color);
+    unawaited(VideoPlayerPipPlatform.instance.setPipAccentColor(playerId, color));
   }
 
   @override
   void didUpdateWidget(VideoPlayer oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_syncPipAccentColor);
+      widget.controller.addListener(_syncPipAccentColor);
+      _lastAccentPlayerId = null;
+      _lastAccentColor = null;
+      _syncPipAccentColor();
+    }
   }
 
   @override
   void dispose() {
+    widget.controller.removeListener(_syncPipAccentColor);
     super.dispose();
   }
 

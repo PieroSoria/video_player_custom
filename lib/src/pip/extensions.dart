@@ -1,3 +1,5 @@
+import 'dart:ui' show Color;
+
 import 'video_player_custom_pip.dart';
 
 extension VideoPlayerControllerExtension on VideoPlayerController {
@@ -7,8 +9,13 @@ extension VideoPlayerControllerExtension on VideoPlayerController {
   }
 
   /// Enters PiP mode for the specified player ID.
-  Future<bool> enterPipMode({int? width, int? height}) {
-    return VideoPlayerPip.enterPipMode(this, width: width, height: height);
+  Future<bool> enterPipMode({int? width, int? height, Color? primaryColor}) {
+    return VideoPlayerPip.enterPipMode(
+      this,
+      width: width,
+      height: height,
+      primaryColor: primaryColor,
+    );
   }
 
   /// Exits PiP mode.

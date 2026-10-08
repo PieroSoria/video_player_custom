@@ -107,10 +107,7 @@ class WindowsPipWindow {
     click(bounds.width ~/ 2, controlY);
   }
 
-  static int get controlY {
-    final height = size.height;
-    return 32 + (height - 32 - (height < 180 ? 48 : 0)) ~/ 2;
-  }
+  static int get controlY => size.height ~/ 2;
 
   static void skipSeconds({required bool forward}) {
     final bounds = size;
@@ -171,13 +168,50 @@ class WindowsPipWindow {
     return samplePixels([
       for (var y = 1; y <= 3; y++)
         for (var x = 1; x <= 8; x++)
-          (x: bounds.width * x ~/ 10, y: 32 + (bounds.height - 32) * y ~/ 10),
+          (x: bounds.width * x ~/ 10, y: bounds.height * y ~/ 10),
     ]);
   }
 
-  static void restore() => click(size.width - 48, 16);
+  static List<int> get topControlPixels {
+    final bounds = size;
+    return samplePixels([
+      for (var y = 10; y <= 34; y += 3)
+        for (var x = bounds.width - 70; x <= bounds.width - 10; x += 3)
+          (x: x, y: y),
+    ]);
+  }
 
-  static void closeButton() => click(size.width - 16, 16);
+  static List<int> get edgePixels {
+    final bounds = size;
+    return samplePixels([
+      for (var fraction = 2; fraction <= 8; fraction++) ...[
+        (x: bounds.width * fraction ~/ 10, y: 8),
+        (x: bounds.width * fraction ~/ 10, y: bounds.height - 8),
+        (x: 8, y: bounds.height * fraction ~/ 10),
+        (x: bounds.width - 8, y: bounds.height * fraction ~/ 10),
+      ],
+    ]);
+  }
+
+  static List<int> get indicatorPixels {
+    final bounds = size;
+    return samplePixels([
+      (x: 16 + (bounds.width - 32) ~/ 5, y: bounds.height - 20),
+      (x: 16 + (bounds.width - 32) ~/ 2, y: bounds.height - 20),
+    ]);
+  }
+
+  static void restore() {
+    final x = size.width - 56;
+    movePointer(x, 22);
+    click(x, 22);
+  }
+
+  static void closeButton() {
+    final x = size.width - 24;
+    movePointer(x, 22);
+    click(x, 22);
+  }
 
   static void close() => _post(handle, 0x0010, 0, 0); // WM_CLOSE
 
@@ -202,7 +236,7 @@ class WindowsPipWindow {
     final bounds = size;
     final dc = _getDc(window);
     try {
-      // Ignore the control bands and letterbox edges; sample the video itself.
+      // Inspect the video without including the overlaid controls.
       for (var row = 2; row < 8; row++) {
         for (var column = 2; column < 8; column++) {
           final color = _pixel(

@@ -14,22 +14,32 @@ void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized().framePolicy =
       LiveTestWidgetsFlutterBindingFramePolicy.fullyLive;
 
-  Future<void> mount(
-    WidgetTester tester,
-    VideoPlayerController controller,
-  ) async {
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: Center(
-            child: AspectRatio(
-              aspectRatio: 16 / 9,
-              child: VideoPlayer(controller),
+  Widget playerApp(VideoPlayerController controller, {Color? primary}) {
+    return MaterialApp(
+      theme: primary == null
+          ? null
+          : ThemeData(
+              colorScheme: ColorScheme.fromSeed(
+                seedColor: primary,
+              ).copyWith(primary: primary),
             ),
+      home: Scaffold(
+        body: Center(
+          child: AspectRatio(
+            aspectRatio: 16 / 9,
+            child: VideoPlayer(controller),
           ),
         ),
       ),
     );
+  }
+
+  Future<void> mount(
+    WidgetTester tester,
+    VideoPlayerController controller, {
+    Color? primary,
+  }) async {
+    await tester.pumpWidget(playerApp(controller, primary: primary));
     await controller.initialize().timeout(const Duration(seconds: 25));
     await controller.setVolume(0);
     await tester.pump();
@@ -116,7 +126,7 @@ void main() {
     final largeVideoHeight = (640 / aspect).round();
     final smallVideoHeight = (320 / aspect).round();
     expect(
-      await controller.enterPipMode(width: 640, height: largeVideoHeight + 32),
+      await controller.enterPipMode(width: 640, height: largeVideoHeight),
       isTrue,
     );
     WindowsPipWindow.leavePointer();
@@ -130,12 +140,12 @@ void main() {
       for (final point in points)
         for (var dy = 0; dy < 2; dy++)
           for (var dx = 0; dx < 2; dx++)
-            (x: point.x * 2 + dx, y: 32 + point.y * 2 + dy),
+            (x: point.x * 2 + dx, y: point.y * 2 + dy),
     ]);
-    WindowsPipWindow.resize(320, smallVideoHeight + 32);
+    WindowsPipWindow.resize(320, smallVideoHeight);
     await tester.pump(const Duration(milliseconds: 200));
     final smallPixels = WindowsPipWindow.samplePixels([
-      for (final point in points) (x: point.x, y: 32 + point.y),
+      for (final point in points) (x: point.x, y: point.y),
     ]);
     expect(largePixels, isNot(contains(0xffffffff)));
     expect(smallPixels, isNot(contains(0xffffffff)));
@@ -157,6 +167,34 @@ void main() {
       lessThan(10),
       reason: 'Downscale RGB mean error: $meanError',
     );
+    expect(await controller.exitPipMode(), isTrue);
+  });
+
+  testWidgets('Windows PiP indicator follows live theme primary changes', (
+    tester,
+  ) async {
+    const firstPrimary = Color(0xff31a6e8);
+    const nextPrimary = Color(0xffc252d1);
+    // GDI reports COLORREF in 0xBBGGRR order rather than Flutter's ARGB.
+    const firstPixels = 0x00e8a631;
+    const nextPixels = 0x00d152c2;
+    final controller = VideoPlayerController.asset('assets/Butterfly-209.mp4');
+    addTearDown(controller.dispose);
+    await mount(tester, controller, primary: firstPrimary);
+    await controller.seekTo(
+      Duration(milliseconds: controller.value.duration.inMilliseconds ~/ 2),
+    );
+    expect(await controller.enterPipMode(width: 420, height: 300), isTrue);
+    WindowsPipWindow.movePointer(210, 64);
+    await tester.pump(const Duration(milliseconds: 300));
+    final window = WindowsPipWindow.handle;
+    expect(WindowsPipWindow.indicatorPixels, everyElement(firstPixels));
+
+    await tester.pumpWidget(playerApp(controller, primary: nextPrimary));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(WindowsPipWindow.handle, window);
+    expect(WindowsPipWindow.indicatorPixels, everyElement(nextPixels));
+    expect(controller.value.isPlaying, isFalse);
     expect(await controller.exitPipMode(), isTrue);
   });
 
@@ -288,18 +326,31 @@ void main() {
     WindowsPipWindow.leavePointer();
     await tester.pump(const Duration(milliseconds: 2800));
     final hidden = WindowsPipWindow.controlPixels;
+    final hiddenTop = WindowsPipWindow.topControlPixels;
+    final edges = WindowsPipWindow.edgePixels;
+    expect(edges, isNot(contains(0xffffffff)));
+    expect(
+      edges.where((pixel) => pixel != 0).length,
+      greaterThan(edges.length * 0.8),
+      reason: 'Video must reach all four edges without reserved control bands',
+    );
     WindowsPipWindow.movePointer(210, 64);
     await tester.pump(const Duration(milliseconds: 150));
     final visible = WindowsPipWindow.controlPixels;
+    final visibleTop = WindowsPipWindow.topControlPixels;
     expect(visible, isNot(hidden));
+    expect(visibleTop, isNot(hiddenTop));
     WindowsPipWindow.leavePointer();
     await tester.pump(const Duration(milliseconds: 400));
     expect(WindowsPipWindow.controlPixels, visible);
     await tester.pump(const Duration(milliseconds: 2400));
     expect(WindowsPipWindow.controlPixels, hidden);
+    expect(WindowsPipWindow.topControlPixels, hiddenTop);
     WindowsPipWindow.movePointer(210, 64);
     await tester.pump(const Duration(milliseconds: 150));
     expect(WindowsPipWindow.controlPixels, visible);
+    expect(WindowsPipWindow.topControlPixels, visibleTop);
+
     expect(controller.value.isPlaying, isFalse);
     expect((await controller.position)!.inSeconds, 2);
     expect(await controller.exitPipMode(), isTrue);

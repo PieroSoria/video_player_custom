@@ -16,7 +16,7 @@ Requires Flutter 3.47+ and Dart 3.13+. Material widgets are imported from
 | macOS 12+ | Shared AVFoundation | Native PiP with `VideoViewType.platformView` |
 | Windows | Windows Media Foundation + WASAPI | Separate native, always-on-top window |
 | Linux | GStreamer | Not implemented |
-| Web | HTML video | Not implemented |
+| Web | HTML video | Native video PiP, with Document PiP as a fallback |
 
 Flutter registers the correct backend automatically. Import
 `package:video_player_custom/video_player_custom.dart` for playback and PiP.
@@ -110,6 +110,28 @@ bar with playback time. Click or drag the bar to choose a position; paused
 seeks update the picture without starting playback. The playback controls
 hide 2.5 seconds after the cursor leaves the video and remain visible during
 a seek drag. Seeking is disabled for sources with an unknown duration.
+The video fills the window without a title band or black control panels;
+resizing to a different aspect ratio crops the edges. Restore and close are
+overlaid on the video and hide with the playback controls. Drag the top area
+to move the window, or resize from its edges.
+
+The played bar, seek thumb and center playback button follow the mounted
+`VideoPlayer`'s `Theme.of(context).colorScheme.primary`, including theme changes
+while PiP is open. The last color is retained if the video widget is unmounted
+while its controller stays alive. For entry without a mounted widget, pass
+`primaryColor` explicitly:
+
+```dart
+await controller.enterPipMode(
+  width: 360,
+  height: 240,
+  primaryColor: Theme.of(context).colorScheme.primary,
+);
+```
+
+Browser-native and Apple PiP controls are owned by the platform and do not use
+this color override.
+
 Frames come from the same native
 player, preserving playback position and audio. The original application
 window remains usable. Its owning `VideoPlayer` displays a “Picture in Picture”
@@ -178,6 +200,115 @@ entitlement](https://flutter.dev/to/macos-entitlements)
 
 The `VideoPlayerOptions.mixWithOthers` option can't be implemented in web, at least at the moment. If you use this option in web it will be silently ignored.
 
+#### Web Picture-in-Picture
+
+Call `controller.enterPipMode()` or `VideoPlayerPip.togglePipMode(controller)`
+directly from a click or tap after initialization. Use HTTPS or localhost and
+keep the controller and its `VideoPlayer` mounted. The browser must expose an
+available PiP API; query `controller.isPipSupported()` to configure your UI.
+
+The package prefers native video Picture-in-Picture, then Safari presentation
+mode. The browser owns the floating window, controls, origin indicator and
+aspect ratio; their appearance and available actions vary between browsers.
+Native PiP ignores the requested `width` and `height`. The inline view displays
+“Picture in Picture” while the same video continues in the native window.
+
+When native video PiP is unavailable and
+[Document Picture-in-Picture](https://developer.chrome.com/docs/web-platform/document-picture-in-picture)
+is available in the top-level page, the same HTML video moves into a floating
+document with a custom overlay. Hovering shows centered
+10-second rewind, play/pause and forward buttons, plus a bottom seek bar with
+elapsed time and buffered ranges. Dragging seeks without starting a paused
+video. Controls hide 2.5 seconds after the cursor leaves and remain visible
+while dragging or using the keyboard. Space/K toggles playback; the arrow keys
+seek. Window dimensions are hints subject to browser limits.
+
+The overlay uses transparent SVG buttons and a thin progress bar without black
+panels. The video fills the window; resizing to a different aspect ratio crops
+its edges. The browser's origin header (for example, `localhost` during
+development) remains visible as required by the
+[Document PiP specification](https://wicg.github.io/document-picture-in-picture/#origin-visibility)
+and cannot be hidden by the package.
+
+Native video PiP cannot include this package's custom overlay. Unsupported or
+denied requests return `false` and report errors via
+`onPipError`. In Document PiP, restore pauses the source and emits its position;
+closing the window or calling `reset()` pauses playback. Programmatic
+`exitPipMode()` restores the inline video and preserves playback. Disposing the
+owner ends its PiP session.
+
+For playback while the original tab is in the background, set
+`VideoPlayerOptions(allowBackgroundPlayback: true)`. Browser autoplay and
+background restrictions still apply.
+
+Native audio/video track enumeration and explicit selection are implemented
+when the browser exposes `audioTracks`/`videoTracks`. Use
+`isAudioTrackSupportAvailable()` and `isVideoTrackSupportAvailable()` before
+showing selectors. Unsupported enumeration returns an empty list. HTML video
+tracks do not expose an adaptive quality ladder or automatic quality reset;
+`selectVideoTrack(null)` therefore throws `UnsupportedError` on web.
+
+`preventsDisplaySleepDuringVideoPlayback` uses the Screen Wake Lock API when
+available. Each playing video in a visible document owns its own lock, including
+after moving to Document PiP. Pausing, disabling the option or disposing releases
+it. Browser permissions and power-saving policies may deny or release a lock;
+video playback continues normally.
+
+#### Web cache and request headers
+
+`cacheKey` enables persistent media caching in IndexedDB. Completed entries
+survive reloads on the same origin. A cache hit plays a leased blob URL without
+requesting the original server; a miss plays the network source and downloads
+a copy in the background. `isLive: true` bypasses cache reads and writes.
+
+```dart
+import 'package:video_player_custom/video_player_custom.dart';
+
+WebVideoPlayerCache.instance = WebVideoPlayerCache(
+  namespace: 'my-app-videos',
+  maxCacheSizeBytes: 256 << 20,
+);
+final uri = Uri.parse('https://example.com/video.mp4');
+await WebVideoPlayerCache.instance.prefetch(
+  uri.toString(),
+  cacheKey: 'weekly-highlights',
+);
+final controller = VideoPlayerController.networkUrl(
+  uri,
+  cacheKey: 'weekly-highlights',
+);
+await controller.initialize();
+```
+
+The cache exposes `supported`, `have`, `warm`, `prefetch`, `remove`, `clear`,
+and `totalSizeBytes`. Downloads commit atomically, and the least recently used
+completed entries are evicted when the budget is exceeded. Controllers release
+their blob URLs on disposal. Direct callers of `sourceFor` must call
+`releaseSource` after playback. Clearing stored entries preserves active
+playback; disposing the cache revokes its active URLs.
+
+MP4, WebM and other single files require a codec supported by the browser.
+Finite HLS caching also rewrites playlists, segments and AES-128 keys, but
+requires native HLS playback; Safari blob-playlist playback has not been
+verified. Live HLS, DRM, DASH and Smooth Streaming are rejected by the browser
+cache. This backend does not include an MSE adaptive-stream decoder.
+
+Custom `httpHeaders` are sent with Fetch for finite media, including without a
+cache key. This loads the complete media before playback. Authenticated live
+streams must use cookies or signed URLs; custom headers with `isLive: true`
+are rejected. Cross-origin downloads require CORS permission from the server.
+Cache failures fall back to network playback where possible. Browser quotas,
+private mode and storage eviction can limit persistence. Use a separate cache
+key or namespace per user for private media and clear it when signing out.
+The application shell needs its own offline loading setup; this cache stores
+media only.
+
+Run the browser tests with `flutter test --platform chrome test/web_browser_test.dart`.
+For a real floating-window check, run the public API fixture from `example`:
+`flutter run -d web-server -t ../test/support/web_pip_smoke.dart`.
+The [browser verification guide](test/support/README.md) explains the fixture,
+automated coverage, and environment-specific test setup.
+
 ## Supported Formats
 
 - On iOS and macOS, the backing player is [AVPlayer](https://developer.apple.com/documentation/avfoundation/avplayer).
@@ -191,7 +322,7 @@ The `VideoPlayerOptions.mixWithOthers` option can't be implemented in web, at le
 
 <?code-excerpt "basic.dart (basic-example)"?>
 ```dart
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:video_player_custom/video_player_custom.dart';
 
 void main() => runApp(const VideoApp());
@@ -338,7 +469,7 @@ To learn about playback speed limitations, see the [`setPlaybackSpeed` method do
 
 Furthermore, see the example app for an example playback speed implementation.
 
-### Disk cache for network videos
+### Disk cache for network videos on desktop and mobile
 
 When you pass a `cacheKey` to `VideoPlayerController.networkUrl`, the plugin
 keeps the downloaded file on disk so later openings are instant and work
@@ -385,7 +516,8 @@ final controller = VideoPlayerController.networkUrl(
   (a manifest snapshot goes stale in seconds). Live manifests themselves
   (HLS without `EXT-X-ENDLIST`, dynamic DASH, DVR/Smooth Streaming) are also rejected by the downloaders
   and keep streaming live.
-- **Web (`kIsWeb`)** never caches: the disk cache is desktop/mobile only.
+- **Web** uses `WebVideoPlayerCache` and IndexedDB instead of this disk API;
+  see the web setup section for its supported formats and browser limits.
 
 Manifest detection ignores URL query parameters and fragments, so
 `video.m3u8?token=...` is recognized as HLS. For URLs without a filename

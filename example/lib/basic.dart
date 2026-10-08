@@ -30,14 +30,12 @@ class _VideoAppState extends State<VideoApp> {
 
   Future<void> _togglePip() async {
     if (!_controller.value.isInitialized) return;
+    final success = await VideoPlayerPip.togglePipMode(_controller);
     final active = await _controller.isInPipMode();
-    final success = active
-        ? await _controller.exitPipMode()
-        : await _controller.enterPipMode();
     if (mounted) {
       setState(
         () => _pipStatus = success
-            ? (active ? 'PiP cerrado' : 'PiP activo')
+            ? (active ? 'PiP activo' : 'PiP cerrado')
             : 'PiP no disponible para este video',
       );
     }

@@ -492,11 +492,12 @@ class VideoPlayerCache {
 
   static String _hash(String value) {
     // FNV-1a 64-bit: stable, dependency-free, plenty for a cache key.
-    const int prime = 0x100000001B3;
-    int hash = 0xcbf29ce484222325;
+    // BigInt also compiles to JavaScript, where 64-bit int literals are not
+    // exact. Keep the signed wrapping used by existing native cache filenames.
+    final BigInt prime = BigInt.from(0x100000001B3);
+    BigInt hash = BigInt.parse('cbf29ce484222325', radix: 16).toSigned(64);
     for (final int unit in value.codeUnits) {
-      hash ^= unit;
-      hash = (hash * prime) & 0xFFFFFFFFFFFFFFFF;
+      hash = ((hash ^ BigInt.from(unit)) * prime).toSigned(64);
     }
     return hash.toRadixString(16).padLeft(16, '0');
   }

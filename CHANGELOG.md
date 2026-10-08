@@ -1,11 +1,30 @@
 ## Unreleased
 
+* Adds web Picture-in-Picture with native browser video controls preferred,
+  Safari support and a Document PiP fallback with seeking and 10-second skips.
+* Refines web PiP with transparent SVG controls, a thin progress bar and
+  edge-to-edge video without black overlay panels or letterboxing.
+* Adds persistent IndexedDB media caching on web, offline cache hits, bounded
+  LRU eviction, finite native-HLS caching and controller blob URL cleanup.
+* Supports custom HTTP headers for finite web media and synchronizes paused
+  PiP seeks with controller position and captions.
+* Implements native browser audio/video track enumeration and explicit
+  selection with feature detection.
+* Implements browser screen wake locks during visible playback, including
+  document PiP handoff and independent cleanup for multiple players.
+* Cancels pending metadata initialization when its controller is disposed and
+  keeps live/unknown-duration playback positions valid.
+* Fixes web compilation of cache key hashing while preserving existing native
+  cache filenames.
 * Completes Windows Picture-in-Picture with an independent native window,
   play/pause, close/restore controls, lifecycle events and owner disposal cleanup.
 * Shows a Picture in Picture placeholder in the owning Windows video view and
   removes intermediate black repaints and color artifacts when scaling PiP.
 * Adds Windows PiP hover controls with a seekable progress bar, centered
   10-second skip/playback buttons, delayed hiding and paused seek previews.
+* Refines Windows PiP with edge-to-edge video, transparent overlay actions,
+  and playback/progress accents following the mounted Material theme primary
+  color, including updates while PiP is open.
 * Uses native Windows Media Foundation/WASAPI playback without media_kit;
   opens sources without blocking Flutter's UI and fixes frame color/alpha/stride,
   seeking and HTTP request headers.

@@ -139,6 +139,41 @@ void main() {
       expect(failure.calls, isNot(contains('dispose')));
     },
   );
+
+  test('disposal cancels initialization waiting for media metadata', () async {
+    final platform = _DelayedMetadataVideoPlayerPlatform();
+    VideoPlayerPlatform.instance = platform;
+    final controller = VideoPlayerController.networkUrl(
+      Uri.parse('https://127.0.0.1/slow.mp4'),
+    );
+    final initialized = controller.initialize();
+    final expectedCancellation = expectLater(
+      initialized,
+      throwsA(isA<StateError>()),
+    );
+    await platform.subscribed.future;
+    await controller.dispose().timeout(const Duration(seconds: 1));
+    await expectedCancellation.timeout(const Duration(seconds: 1));
+    expect(platform.calls.where((call) => call == 'dispose'), hasLength(1));
+    await expectLater(controller.initialize(), throwsA(isA<StateError>()));
+  });
+}
+
+class _DelayedMetadataVideoPlayerPlatform extends FakeVideoPlayerPlatform {
+  final subscribed = Completer<void>();
+  final events = StreamController<VideoEvent>();
+
+  @override
+  Stream<VideoEvent> videoEventsFor(int playerId) {
+    subscribed.complete();
+    return events.stream;
+  }
+
+  @override
+  Future<void> dispose(int playerId) async {
+    await super.dispose(playerId);
+    await events.close();
+  }
 }
 
 class _FailingVideoPlayerPlatform extends FakeVideoPlayerPlatform {

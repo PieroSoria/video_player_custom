@@ -14,21 +14,38 @@ import 'package:video_player_platform_interface/video_player_platform_interface.
 import 'package:web/web.dart' as web;
 
 import 'src/platform_impl/web/video_player.dart';
+import 'src/platform_impl/web/web_pip.dart';
+import 'src/platform_impl/web/web_tracks.dart' as browser_tracks;
+import 'src/pip/video_player_custom_pip_platform_interface.dart';
+import 'src/cache/network_cache.dart';
 
 /// The web implementation of [VideoPlayerPlatform].
 ///
-/// This class implements the video_player functionality (including the PiP
-/// helpfully ignored by the browser) for the web.
+/// Uses HTML video playback and the browser's available Picture-in-Picture API.
 class VideoPlayerCustomWeb extends VideoPlayerPlatform {
+  VideoPlayerCustomWeb() {
+    pip = WebVideoPlayerPip(
+      resolveVideo: (id) => _videoPlayers[id]?.videoElement,
+      resolveHost: (id) => _videoHosts[id],
+    );
+  }
+
+  /// The PiP adapter shares the exact HTML video used for inline playback.
+  late final WebVideoPlayerPip pip;
+
   /// Registers this class as the default instance of [VideoPlayerPlatform].
   static void registerWith(Registrar registrar) {
-    VideoPlayerPlatform.instance = VideoPlayerCustomWeb();
+    final implementation = VideoPlayerCustomWeb();
+    VideoPlayerPlatform.instance = implementation;
+    VideoPlayerPipPlatform.instance = implementation.pip;
   }
 
   // Map of playerId -> VideoPlayer instances.
   final Map<int, VideoPlayer> _videoPlayers = <int, VideoPlayer>{};
+  final Map<int, web.HTMLDivElement> _videoHosts = {};
+  final Map<int, String> _ownedSources = {};
 
-  int _playerCounter = 1;
+  static int _playerCounter = 1;
 
   @override
   Future<void> init() async {
@@ -37,16 +54,17 @@ class VideoPlayerCustomWeb extends VideoPlayerPlatform {
 
   @override
   Future<void> dispose(int playerId) async {
-    _player(playerId).dispose();
-    _videoPlayers.remove(playerId);
-    return;
+    pip.playerDisposed(playerId);
+    _videoPlayers.remove(playerId)?.dispose();
+    _videoHosts.remove(playerId);
+    final source = _ownedSources.remove(playerId);
+    if (source != null) releaseBrowserCachedSource(source);
   }
 
-  void _disposeAllPlayers() {
-    for (final VideoPlayer videoPlayer in _videoPlayers.values) {
-      videoPlayer.dispose();
+  Future<void> _disposeAllPlayers() async {
+    for (final id in _videoPlayers.keys.toList()) {
+      await dispose(id);
     }
-    _videoPlayers.clear();
   }
 
   @override
@@ -88,15 +106,37 @@ class VideoPlayerCustomWeb extends VideoPlayerPlatform {
             'web implementation of video_player cannot play content uri'));
     }
 
+    if (dataSource.sourceType == DataSourceType.network &&
+        dataSource.httpHeaders.isNotEmpty &&
+        !uri.startsWith('blob:') && !uri.startsWith('data:')) {
+      uri = await fetchBrowserVideoSource(
+        uri,
+        headers: dataSource.httpHeaders,
+        formatHint: dataSource.formatHint,
+      );
+      _ownedSources[playerId] = uri;
+    }
+
     final web.HTMLVideoElement videoElement = web.HTMLVideoElement()
       ..id = 'videoElement-$playerId'
       ..style.border = 'none'
       ..style.height = '100%'
       ..style.width = '100%';
 
+    // Keep Flutter's platform-view host mounted when Document PiP adopts the
+    // video into its own document. The PiP adapter renders a placeholder here.
+    final host = web.HTMLDivElement()
+      ..id = 'videoPlayerHost-$playerId'
+      ..style.width = '100%'
+      ..style.height = '100%'
+      ..style.position = 'relative'
+      ..style.backgroundColor = 'black';
+    host.appendChild(videoElement);
+    _videoHosts[playerId] = host;
+
     // TODO(hterkelsen): Use initialization parameters once they are available
     ui_web.platformViewRegistry.registerViewFactory(
-        'videoPlayer-$playerId', (int viewId) => videoElement);
+        'videoPlayer-$playerId', (int viewId) => host);
 
     final VideoPlayer player = VideoPlayer(videoElement: videoElement)
       ..initialize(
@@ -104,6 +144,7 @@ class VideoPlayerCustomWeb extends VideoPlayerPlatform {
       );
 
     _videoPlayers[playerId] = player;
+    pip.playerCreated(playerId);
 
     return playerId;
   }
@@ -134,6 +175,16 @@ class VideoPlayerCustomWeb extends VideoPlayerPlatform {
   }
 
   @override
+  Future<void> setPreventsDisplaySleepDuringVideoPlayback(
+    int playerId,
+    bool preventsDisplaySleepDuringVideoPlayback,
+  ) async {
+    _player(playerId).setPreventsDisplaySleepDuringVideoPlayback(
+      preventsDisplaySleepDuringVideoPlayback,
+    );
+  }
+
+  @override
   Future<void> seekTo(int playerId, Duration position) async {
     return _player(playerId).seekTo(position);
   }
@@ -142,6 +193,30 @@ class VideoPlayerCustomWeb extends VideoPlayerPlatform {
   Future<Duration> getPosition(int playerId) async {
     return _player(playerId).getPosition();
   }
+
+  @override
+  Future<List<VideoAudioTrack>> getAudioTracks(int playerId) async =>
+      browser_tracks.getAudioTracks(_player(playerId).videoElement);
+
+  @override
+  Future<void> selectAudioTrack(int playerId, String trackId) async =>
+      browser_tracks.selectAudioTrack(_player(playerId).videoElement, trackId);
+
+  @override
+  bool isAudioTrackSupportAvailable() =>
+      browser_tracks.isAudioTrackSupportAvailable;
+
+  @override
+  Future<List<VideoTrack>> getVideoTracks(int playerId) async =>
+      browser_tracks.getVideoTracks(_player(playerId).videoElement);
+
+  @override
+  Future<void> selectVideoTrack(int playerId, VideoTrack? track) async =>
+      browser_tracks.selectVideoTrack(_player(playerId).videoElement, track);
+
+  @override
+  bool isVideoTrackSupportAvailable() =>
+      browser_tracks.isVideoTrackSupportAvailable;
 
   @override
   Stream<VideoEvent> videoEventsFor(int playerId) {

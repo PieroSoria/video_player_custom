@@ -10,6 +10,20 @@ class MethodChannelVideoPlayerPip extends VideoPlayerPipPlatform {
   final methodChannel = const MethodChannel('video_player_pip');
 
   @override
+  Future<void> setPipAccentColor(int playerId, int color) async {
+    try {
+      await methodChannel.invokeMethod<void>('setPipAccentColor', {
+        'playerId': playerId,
+        'color': color,
+      });
+    } on MissingPluginException {
+      // Older/platform-owned PiP windows do not expose styling.
+    } on PlatformException catch (e) {
+      debugPrint('Error updating PiP accent: ${e.message}');
+    }
+  }
+
+  @override
   Future<bool> isPipSupported() async {
     try {
       final isSupported = await methodChannel.invokeMethod<bool>(

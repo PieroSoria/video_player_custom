@@ -461,6 +461,24 @@ second.ts
     expect(again!.path, byHash.path, reason: 'same hash every time');
   });
 
+  test('existing signed hash filenames remain readable', () async {
+    const url = 'https://example.com/clip.mp4';
+    const entries = <String?, String>{
+      'https://example.com/video?id=123': 'key~24f2fde727248860.mp4',
+      'CON': 'key~0ba0f119aa5d684b.mp4',
+      'vídeo:日本語': 'key~-777c5719b3bb8e7d.mp4',
+      null: '-37e4a160fc96201.mp4',
+    };
+    for (final entry in entries.entries) {
+      final file = await File(
+        '${tempDir.path}${Platform.pathSeparator}${entry.value}',
+      ).writeAsBytes([1, 2, 3]);
+      final cached = await cache.fileFor(url, cacheKey: entry.key);
+      expect(cached?.path, file.path);
+      expect(await cached!.readAsBytes(), [1, 2, 3]);
+    }
+  });
+
   test('initialize() uses the cached local file when one exists', () async {
     final body = Uint8List.fromList(utf8.encode('cached-video'));
     final server = await serve(body);

@@ -82,6 +82,8 @@ class VideoPlayerPip {
   /// Optional parameters:
   /// - [width]: Desired width of the PiP window (in pixels)
   /// - [height]: Desired height of the PiP window (in pixels)
+  /// - [primaryColor]: Initial Windows control accent, overriding the last
+  ///   mounted [VideoPlayer] theme. Mounted widgets follow later theme changes.
   ///
   /// The controller must be initialized. iOS and macOS require
   /// [VideoViewType.platformView]. Windows opens a small, borderless,
@@ -101,6 +103,7 @@ class VideoPlayerPip {
     VideoPlayerController controller, {
     int? width,
     int? height,
+    Color? primaryColor,
   }) async {
     if (controller.playerId == VideoPlayerController.kUninitializedPlayerId) {
       debugPrint(
@@ -116,6 +119,7 @@ class VideoPlayerPip {
     }
     // Install the native callback handler even without an event subscriber.
     final VideoPlayerPip pip = instance;
+    pip._ensurePlatformEvents();
     final int playerId = controller.playerId;
     final Object? token = pipPlayerToken(playerId);
     if (token == null) {
@@ -125,6 +129,17 @@ class VideoPlayerPip {
     final int revision = pip._stateRevision;
     pip._pendingEnterPlayerId = playerId;
     try {
+      final int? accent = primaryColor?.toARGB32() ?? pipAccentColor(playerId);
+      if (accent != null) rememberPipAccentColor(playerId, accent);
+      if (!kIsWeb &&
+          defaultTargetPlatform == TargetPlatform.windows &&
+          accent != null) {
+        await _platform.setPipAccentColor(playerId, accent);
+        if (!identical(pipPlayerToken(playerId), token) ||
+            pip._commandGeneration != command) {
+          return false;
+        }
+      }
       final entered = await _platform.enterPipMode(
         playerId,
         width: width,
@@ -150,6 +165,7 @@ class VideoPlayerPip {
   /// Returns `true` if PiP mode was exited successfully, or `false` otherwise.
   static Future<bool> exitPipMode() async {
     final VideoPlayerPip pip = instance;
+    pip._ensurePlatformEvents();
     final int command = ++pip._commandGeneration;
     final int? playerId = pipPlayerId.value ?? pip._pendingEnterPlayerId;
     final bool exited = await _platform.exitPipMode();
@@ -175,6 +191,7 @@ class VideoPlayerPip {
   /// to guarantee a clean slate for the next playback session.
   static Future<void> reset() async {
     final VideoPlayerPip pip = instance;
+    pip._ensurePlatformEvents();
     final int command = ++pip._commandGeneration;
     await _platform.reset();
     if (pip._commandGeneration == command) {
@@ -199,6 +216,7 @@ class VideoPlayerPip {
   /// });
   /// ```
   Stream<PipModeChanged> get onPipModeChanged {
+    _ensurePlatformEvents();
     return _onPipModeChangedController.stream;
   }
 
@@ -211,6 +229,7 @@ class VideoPlayerPip {
   /// });
   /// ```
   Stream<String> get onPipError {
+    _ensurePlatformEvents();
     return _onPipErrorController.stream;
   }
 
@@ -224,17 +243,26 @@ class VideoPlayerPip {
   /// - [height]: Desired height of the PiP window (in pixels)
   ///
   /// Returns `true` if the operation was successful, or `false` otherwise.
+  /// [primaryColor] configures the Windows accent when entering PiP.
   static Future<bool> togglePipMode(
     VideoPlayerController controller, {
     int? width,
     int? height,
+    Color? primaryColor,
   }) async {
-    final bool isInPip = await isInPipMode();
+    final bool isInPip = kIsWeb
+        ? _platform.currentPipState ?? (pipPlayerId.value != null)
+        : await isInPipMode();
 
     if (isInPip) {
       return exitPipMode();
     }
-    return enterPipMode(controller, width: width, height: height);
+    return enterPipMode(
+      controller,
+      width: width,
+      height: height,
+      primaryColor: primaryColor,
+    );
   }
 
   /// Resumes playback on [controller] at [position], continuing where a restored
@@ -266,6 +294,28 @@ class VideoPlayerPip {
     _lastOwner = pipPlayerId.value;
     pipPlayerId.addListener(_onOwnerChanged);
     _channel.setMethodCallHandler(_handleMethodCall);
+    _ensurePlatformEvents();
+  }
+
+  VideoPlayerPipPlatform? _eventPlatform;
+  StreamSubscription<VideoPlayerPipPlatformEvent>? _platformEventsSubscription;
+
+  void _ensurePlatformEvents() {
+    if (_disposed || identical(_eventPlatform, _platform)) return;
+    final previous = _platformEventsSubscription;
+    if (previous != null) unawaited(previous.cancel());
+    _eventPlatform = _platform;
+    _platformEventsSubscription = _platform.events.listen((event) {
+      if (_disposed) return;
+      if (event.error != null) {
+        _onPipErrorController.add(event.error!);
+        return;
+      }
+      _nativeModeChanged({
+        'playerId': event.playerId,
+        'positionMs': event.positionMs,
+      }, entered: event.isInPip, restored: event.isRestored);
+    });
   }
 
   int _commandGeneration = 0;
@@ -275,13 +325,13 @@ class VideoPlayerPip {
   int? _lastOwner;
   PipModeChanged? _nextModeEvent;
 
-  bool get _usesWindowsPlaceholder =>
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
+  bool get _usesTrackedOwnerEvents =>
+      kIsWeb || defaultTargetPlatform == TargetPlatform.windows;
 
   void _onOwnerChanged() {
     final int? owner = pipPlayerId.value;
     _stateRevision++;
-    if (_usesWindowsPlaceholder) {
+    if (_usesTrackedOwnerEvents) {
       _onPipModeChangedController.add(
         _nextModeEvent ??
             PipModeChanged(
@@ -336,7 +386,7 @@ class VideoPlayerPip {
       // A close callback can arrive before the enter method's success reply.
       _stateRevision++;
     }
-    if (!_usesWindowsPlaceholder) {
+    if (!_usesTrackedOwnerEvents) {
       // Preserve the native event contract of the mobile and Apple backends.
       // Their older callbacks omit IDs; commands must not synthesize duplicate
       // close events before the native didStop notification arrives.
@@ -397,6 +447,9 @@ class VideoPlayerPip {
     }
     _disposed = true;
     _commandGeneration++;
+    final events = _platformEventsSubscription;
+    if (events != null) unawaited(events.cancel());
+    if (kIsWeb) unawaited(_platform.reset());
     _publishOwner(null);
     pipPlayerId.removeListener(_onOwnerChanged);
     if (!_onPipModeChangedController.isClosed) {

@@ -12,6 +12,8 @@ import 'package:web/web.dart' as web;
 
 import 'duration_utils.dart';
 import 'pkg_web_tweaks.dart';
+import 'web_wake_lock.dart';
+import '../playback_position_event.dart';
 
 // An error code value to error name Map.
 // See: https://developer.mozilla.org/en-US/docs/Web/API/MediaError/code
@@ -43,14 +45,25 @@ class VideoPlayer {
     required web.HTMLVideoElement videoElement,
     @visibleForTesting StreamController<VideoEvent>? eventController,
   }) : _videoElement = videoElement, // ignore: prefer_initializing_formals
-       _eventController = eventController ?? StreamController<VideoEvent>();
+       _eventController = eventController ?? StreamController<VideoEvent>(),
+       _wakeLock = BrowserVideoWakeLock(videoElement);
 
   final StreamController<VideoEvent> _eventController;
   final web.HTMLVideoElement _videoElement;
+  final BrowserVideoWakeLock _wakeLock;
+  web.HTMLVideoElement get videoElement => _videoElement;
   web.EventHandler? _onContextMenu;
 
   bool _isInitialized = false;
   bool _isBuffering = false;
+  bool _disposed = false;
+  final List<StreamSubscription<web.Event>> _subscriptions = [];
+
+  void _listen(Stream<web.Event> stream, void Function(web.Event) listener) {
+    _subscriptions.add(stream.listen((event) {
+      if (!_disposed) listener(event);
+    }));
+  }
 
   /// Returns the [Stream] of [VideoEvent]s from the inner [web.HTMLVideoElement].
   Stream<VideoEvent> get events => _eventController.stream;
@@ -74,23 +87,23 @@ class VideoPlayer {
       ..controls = false
       ..playsInline = true;
 
-    _videoElement.onCanPlay.listen(_onVideoElementInitialization);
+    _listen(_videoElement.onCanPlay, _onVideoElementInitialization);
 
-    _videoElement.onCanPlayThrough.listen((dynamic _) {
+    _listen(_videoElement.onCanPlayThrough, (dynamic _) {
       setBuffering(false);
     });
 
-    _videoElement.onPlaying.listen((dynamic _) {
+    _listen(_videoElement.onPlaying, (dynamic _) {
       setBuffering(false);
     });
 
-    _videoElement.onWaiting.listen((dynamic _) {
+    _listen(_videoElement.onWaiting, (dynamic _) {
       setBuffering(true);
       _sendBufferingRangesUpdate();
     });
 
     // The error event fires when some form of error occurs while attempting to load or perform the media.
-    _videoElement.onError.listen((web.Event _) {
+    _listen(_videoElement.onError, (web.Event _) {
       setBuffering(false);
       // The Event itself (_) doesn't contain info about the actual error.
       // We need to look at the HTMLMediaElement.error.
@@ -105,7 +118,7 @@ class VideoPlayer {
       );
     });
 
-    _videoElement.onPlay.listen((dynamic _) {
+    _listen(_videoElement.onPlay, (dynamic _) {
       _eventController.add(
         VideoEvent(
           eventType: VideoEventType.isPlayingStateUpdate,
@@ -114,7 +127,7 @@ class VideoPlayer {
       );
     });
 
-    _videoElement.onPause.listen((dynamic _) {
+    _listen(_videoElement.onPause, (dynamic _) {
       _eventController.add(
         VideoEvent(
           eventType: VideoEventType.isPlayingStateUpdate,
@@ -123,10 +136,20 @@ class VideoPlayer {
       );
     });
 
-    _videoElement.onEnded.listen((dynamic _) {
+    _listen(_videoElement.onEnded, (dynamic _) {
       setBuffering(false);
       _eventController.add(VideoEvent(eventType: VideoEventType.completed));
     });
+
+    void reportPosition(web.Event _) {
+      _eventController.add(PlaybackPositionEvent(_videoElementCurrentTime));
+    }
+    _listen(_videoElement.onSeeked, reportPosition);
+    _listen(_videoElement.onTimeUpdate, reportPosition);
+    _listen(
+      const web.EventStreamProvider<web.Event>('progress').forTarget(_videoElement),
+      (_) => _sendBufferingRangesUpdate(),
+    );
 
     // The `src` of the _videoElement is the last property that is set, so all
     // the listeners for the events that the plugin cares about are attached.
@@ -148,6 +171,7 @@ class VideoPlayer {
   /// limitation should disappear.
   Future<void> play() {
     return _videoElement.play().toDart.catchError((Object e) {
+      if (_disposed) return null;
       // play() attempts to begin playback of the media. It returns
       // a Promise which can get rejected in case of failure to begin
       // playback for any reason, such as permission issues.
@@ -207,6 +231,10 @@ class VideoPlayer {
     assert(speed > 0);
 
     _videoElement.playbackRate = speed;
+  }
+
+  void setPreventsDisplaySleepDuringVideoPlayback(bool prevents) {
+    _wakeLock.setEnabled(prevents);
   }
 
   /// Moves the playback head to a new `position`.
@@ -285,12 +313,22 @@ class VideoPlayer {
 
   /// Disposes of the current [web.HTMLVideoElement].
   void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    _wakeLock.dispose();
+    for (final subscription in _subscriptions) {
+      unawaited(subscription.cancel());
+    }
+    _subscriptions.clear();
+    _videoElement.pause();
     _videoElement.removeAttribute('src');
     if (_onContextMenu != null) {
       _videoElement.removeEventListener('contextmenu', _onContextMenu);
       _onContextMenu = null;
     }
     _videoElement.load();
+    _videoElement.remove();
+    unawaited(_eventController.close());
   }
 
   // Handler to mark (and broadcast) when this player [_isInitialized].

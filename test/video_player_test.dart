@@ -714,6 +714,34 @@ void main() {
         await controller.seekTo(const Duration(seconds: -100));
         expect(await controller.position, Duration.zero);
       });
+
+      test('unknown duration allows paused DVR seeks and clamps negative input', () async {
+        // Web playback uses this negative sentinel when duration is unknown,
+        // including live media whose seekable DVR range can still be nonzero.
+        fakeVideoPlayerPlatform.initializationDuration =
+            const Duration(milliseconds: -9007199254740990);
+        final controller = VideoPlayerController.networkUrl(_localhostUri, isLive: true);
+        addTearDown(controller.dispose);
+
+        await controller.initialize();
+        expect(controller.value.isInitialized, isTrue);
+        expect(controller.value.duration.isNegative, isTrue);
+        expect(controller.value.isPlaying, isFalse);
+
+        await controller.seekTo(const Duration(seconds: 10));
+
+        expect(fakeVideoPlayerPlatform._positions[controller.playerId], const Duration(seconds: 10));
+        expect(controller.value.position, const Duration(seconds: 10));
+        expect(controller.value.isPlaying, isFalse);
+        expect(controller.value.isCompleted, isFalse);
+
+        await controller.seekTo(const Duration(seconds: -10));
+
+        expect(fakeVideoPlayerPlatform._positions[controller.playerId], Duration.zero);
+        expect(controller.value.position, Duration.zero);
+        expect(controller.value.isPlaying, isFalse);
+        expect(controller.value.isCompleted, isFalse);
+      });
     });
 
     group('setVolume', () {
@@ -2033,6 +2061,7 @@ class FakeVideoPlayerPlatform extends VideoPlayerPlatform {
   final Map<int, StreamController<VideoEvent>> streams = <int, StreamController<VideoEvent>>{};
   List<VideoPlayerOptions?> videoPlayerOptions = <VideoPlayerOptions?>[];
   bool forceInitError = false;
+  Duration initializationDuration = const Duration(seconds: 1);
   int nextPlayerId = 0;
   final Map<int, Duration> _positions = <int, Duration>{};
   final Map<int, VideoPlayerWebOptions> webOptions = <int, VideoPlayerWebOptions>{};
@@ -2049,7 +2078,7 @@ class FakeVideoPlayerPlatform extends VideoPlayerPlatform {
         VideoEvent(
           eventType: VideoEventType.initialized,
           size: const Size(100, 100),
-          duration: const Duration(seconds: 1),
+          duration: initializationDuration,
         ),
       );
     }
@@ -2069,7 +2098,7 @@ class FakeVideoPlayerPlatform extends VideoPlayerPlatform {
         VideoEvent(
           eventType: VideoEventType.initialized,
           size: const Size(100, 100),
-          duration: const Duration(seconds: 1),
+          duration: initializationDuration,
         ),
       );
     }

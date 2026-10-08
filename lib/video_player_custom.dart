@@ -32,6 +32,7 @@ import 'src/platform_impl/avfoundation/avfoundation_video_player.dart';
 // The PiP library re-exports the full, PiP-enabled `video_player` API.
 export 'src/pip/video_player_custom_pip.dart';
 export 'src/cache/video_player_cache.dart';
+export 'src/cache/browser_cache.dart';
 
 /// Dart entry point used by Flutter's generated plugin registrant.
 class VideoPlayerCustom {
